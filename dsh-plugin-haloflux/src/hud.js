@@ -567,6 +567,28 @@ const HalofluxHud = (() => {
     );
   }
 
+  /** Console-only chrome: the parameter search box and the theme-colour swatches. */
+  const CSS_TUNE = `
+.hfx-search{box-sizing:border-box;width:100%;margin:0 0 8px;padding:5px 8px;border-radius:7px;
+  font:inherit;font-size:11px;letter-spacing:.04em;color:${T_LABEL_1};
+  background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) 60%,transparent);
+  border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 70%,transparent);outline:none}
+.hfx-search:focus{border-color:${T_ACCENT}}
+.hfx-swatches{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:0 0 8px}
+.hfx-swatch{font:inherit;font-size:10px;letter-spacing:.04em;cursor:pointer;padding:2px 7px 2px 4px;
+  display:inline-flex;align-items:center;gap:5px;border-radius:999px;color:${T_LABEL_2};
+  background:transparent;border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 70%,transparent)}
+.hfx-swatch:hover{color:${T_LABEL_1}}
+.hfx-swatch.on{color:${T_LABEL_1};border-color:${T_ACCENT}}
+.hfx-swatch-dot{width:10px;height:10px;border-radius:50%;flex:none}
+.hfx-search-none{padding:10px 2px;color:${T_LABEL_3};font-size:11px}
+`;
+
+  /** Theme-colour presets: label + hue (all keep the current strength). */
+  const TINT_SWATCHES = [
+    ['冰蓝', 210], ['青绿', 165], ['紫', 285], ['品红', 320], ['琥珀', 35], ['红', 0],
+  ];
+
   function Console(props) {
     const t = safeT(props);
     const open = props.open === true;
@@ -601,6 +623,17 @@ const HalofluxHud = (() => {
     const [importOpen, setImportOpen] = React.useState(false);
     const [importText, setImportText] = React.useState('');
     const [flash, setFlash] = React.useState('');
+    const [query, setQuery] = React.useState('');
+
+    // parameter search across every group (label or key); groups stay in PARAMS order
+    const q = query.trim().toLowerCase();
+    const view = React.useMemo(() => {
+      if (!q) return groups;
+      const hit = (entry) => (entry.label + ' ' + entry.key).toLowerCase().indexOf(q) >= 0;
+      return groups
+        .map((group) => ({ name: group.name, items: group.items.filter(hit) }))
+        .filter((group) => group.items.length > 0);
+    }, [groups, q]);
 
     const timer = React.useRef(0);
     React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
@@ -671,6 +704,7 @@ const HalofluxHud = (() => {
       'aria-label': t('ui.consoleTitle'), onKeyDown,
     },
       h('style', null, CSS_CONSOLE),
+      h('style', null, CSS_TUNE),
       h('div', { className: 'hfx-console-top' },
         h('span', { className: 'hfx-title' }, t('ui.consoleTitle')),
         presetNames.map((name) => h('button', {
@@ -691,20 +725,37 @@ const HalofluxHud = (() => {
           title: t('ui.close'), 'aria-label': t('ui.close'), onClick: close,
         }, '\u2715')
       ),
-      importOpen ? h('textarea', {
-        className: 'hfx-ta', value: importText, spellCheck: false,
+      h('div', { className: 'hfx-swatches' },
+        TINT_SWATCHES.map(([label, hue]) => h('button', {
+          key: 'tint-' + hue, type: 'button',
+          className: 'hfx-swatch' + (Number(params.tintAmount) > 0.5 && Math.round(Number(params.tintHue)) === hue ? ' on' : ''),
+          title: '\u4e3b\u9898\u8272 ' + label,
+          onClick: () => setParams({ tintAmount: 1, tintHue: hue, tintSat: 1.6 }),
+        }, h('span', { className: 'hfx-swatch-dot', style: { background: 'hsl(' + hue + ',85%,62%)' } }), label)),
+        h('button', {
+          type: 'button', className: 'hfx-swatch' + (Number(params.tintAmount) <= 0.5 ? ' on' : ''),
+          title: '\u6062\u590d\u539f\u8272', onClick: () => setParams({ tintAmount: 0 }),
+        }, '\u539f\u8272')
+      ),
+      importOpen ? h('textarea', {        className: 'hfx-ta', value: importText, spellCheck: false,
         placeholder: t('ui.import'), 'aria-label': t('ui.import'),
         onChange: (event) => setImportText(event.target.value),
         onKeyDown: onImportKey,
       }) : null,
       h('div', { className: 'hfx-body hfx-params' },
-        groups.length
-          ? groups.map((group) => h(ParamGroup, {
+        h('input', {
+          className: 'hfx-search', type: 'search', value: query,
+          placeholder: '\u641c\u7d22\u53c2\u6570\uff08\u540d\u79f0\u6216 key\uff0c\u5982 guard / \u8272\uff09',
+          'aria-label': '\u641c\u7d22\u53c2\u6570',
+          onChange: (event) => setQuery(event.target.value),
+        }),
+        view.length
+          ? view.map((group) => h(ParamGroup, {
             key: group.name, group, params, defaults, setParams, t,
-            collapsed: collapsed[group.name] === true,
+            collapsed: q ? false : collapsed[group.name] === true,
             onToggle: () => toggleGroup(group.name),
           }))
-          : h('div', { className: 'hfx-empty' }, t('ui.empty'))
+          : h('div', { className: 'hfx-search-none' }, '\u6ca1\u6709\u5339\u914d\u7684\u53c2\u6570')
       ),
       h('div', { className: 'hfx-hint' },
         h('span', { className: 'hfx-hint-text' }, t('ui.hint')),

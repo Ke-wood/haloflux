@@ -1,6 +1,6 @@
 {
   "name": "dsh-haloflux",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A live light-ring background for the DeepSeek Harness Web GUI, driven by the current session: ring rotation, token capture and beams follow the model call, with a Settings page and a three-level data capture dial.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",

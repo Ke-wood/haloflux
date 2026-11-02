@@ -157,10 +157,19 @@ const HalofluxEngine = (() => {
     ['guardBlur', '正文列低通虚化 (px, 0=关)', 0, 24, 0.5, '分层'],
     ['motionQuiet', '静读：整体减弱运动', 0, 1, 0.1, '分层'],
     ['readFade', '阅读时自动降亮 (0关 1开)', 0, 1, 1, '分层'],
+    /* ---- round 7: live gauges drawn on the field (each one a switch) ---- */
+    ['ctxArc', '上下文占用弧 (0关 1开)', 0, 1, 1, '数据'],
+    ['toolBeam', '工具调用带名光带 (0关 1开)', 0, 1, 1, '数据'],
+    ['errFx', '失败提示 红闪 (0关 1开)', 0, 1, 1, '数据'],
+    ['stepTicks', '步骤刻度 (0关 1开)', 0, 1, 1, '数据'],
+    ['hudScale', 'HUD 缩放', 0.8, 1.6, 0.05, 'HUD'],
+    ['hudInset', 'HUD 边距 px', 4, 48, 1, 'HUD'],
+    ['hudTop', 'HUD 顶距 px', 0, 80, 1, 'HUD'],
     /* ---- round 6: theme colour (applied by the host as a CSS filter chain) ---- */
     ['tintAmount', '主题染色 强度 (0=原色)', 0, 1, 0.05, '配色'],
     ['tintHue', '主题色相 0-360', 0, 360, 5, '配色'],
     ['tintSat', '主题饱和 增强', 0.2, 3, 0.05, '配色'],
+    ['tintFollow', '跟随 DSH 主题色 (0关 1开)', 0, 1, 1, '配色'],
   ];
 
   const BASE = {
@@ -181,6 +190,8 @@ const HalofluxEngine = (() => {
     /* layer separation: off by default for blur, guard on at a light strength */
     fieldBlur: 0, ringData: 1, guardOn: 1, guardStrength: 0.4, guardRadius: 0.9, guardColW: 0, plateAlpha: 0.72,
     fieldBright: 1, guardBlur: 0, motionQuiet: 0, readFade: 0,
+    ctxArc: 1, toolBeam: 1, errFx: 1, stepTicks: 1,
+    hudScale: 1, hudInset: 12, hudTop: 6, tintFollow: 0,
     tintAmount: 0, tintHue: 210, tintSat: 1.6,
   };
 
@@ -1745,6 +1756,9 @@ const HalofluxEngine = (() => {
         S.globalCompositeOperation = 'source-over';
       }
 
+      // live gauges (context arc / step ticks / tool beam / error wash)
+      drawGauges();
+
       // text guard: punch the light field down where the reading text sits, so the
       // two planes are visibly separate (switchable; no-op when guardOn is off)
       applyTextGuard(S);
@@ -1937,6 +1951,110 @@ const HalofluxEngine = (() => {
       }
       g.restore();
     }
+    /* ---------- v0.6.0: live gauges drawn on the field (all switchable) ---------- */
+    let toolSeen = '';              // last tool id already given a beam
+    let beamT = -1, beamName = '', beamA = 0;
+    let errSeen = 0, errT = -1;
+    let ctxShown = 0;               // eased context occupancy (arc length follows it)
+
+    /** -1 = unknown (no context window from the host yet) */
+    function gaugeCtxFrac() {
+      const lim = liveNumber('contextLimit');
+      const used = liveNumber('contextTokens');
+      return lim > 0 ? clamp(used / lim, 0, 1) : -1;
+    }
+    function updateGauges(dt) {
+      const f = gaugeCtxFrac();
+      if (f >= 0) ctxShown += (f - ctxShown) * (1 - Math.exp(-dt * 3));
+      // one labelled beam per new tool call (angle derives from the tool name)
+      if (num(C.toolBeam, 0) >= 0.5) {
+        const list = live && Array.isArray(live.tools) ? live.tools : [];
+        if (!list.length) toolSeen = '';
+        else {
+          const last = list[list.length - 1] || {};
+          const id = String(last.id || last.name || '');
+          if (id && id !== toolSeen) {
+            toolSeen = id;
+            const name = String(last.name || '');
+            if (name) {
+              beamT = 0; beamName = name.slice(0, 16);
+              let h0 = 0;
+              for (let i = 0; i < name.length; i++) h0 = (h0 * 31 + name.charCodeAt(i)) | 0;
+              beamA = (Math.abs(h0) % 1000) / 1000 * TAU;
+            }
+          }
+        }
+      }
+      if (beamT >= 0) { beamT += dt; if (beamT > 1.4) beamT = -1; }
+      // error flash: a newly failed tool washes the field red for <1s
+      if (num(C.errFx, 0) >= 0.5) {
+        const list = live && Array.isArray(live.tools) ? live.tools : [];
+        let errs = 0;
+        for (const t of list) if (t && String(t.state) === 'error') errs++;
+        if (errs > errSeen) { errSeen = errs; errT = 0; }
+        else if (errs < errSeen) errSeen = errs;
+      }
+      if (errT >= 0) { errT += dt; if (errT > 0.9) errT = -1; }
+    }
+    function drawGauges() {
+      S.setTransform(DPR, 0, 0, DPR, 0, 0);
+      S.save(); S.translate(cx, cy);
+      // context occupancy: an arc inside the ring, cyan until it gets tight
+      if (num(C.ctxArc, 0) >= 0.5 && gaugeCtxFrac() >= 0) {
+        const RA = R * 0.9, f = clamp(ctxShown, 0, 1);
+        S.globalCompositeOperation = 'lighter';
+        S.strokeStyle = 'rgba(120,200,255,.10)'; S.lineWidth = 2.2;
+        S.beginPath(); S.arc(0, 0, RA, -Math.PI / 2, -Math.PI / 2 + TAU); S.stroke();
+        if (f > 0.002) {
+          S.strokeStyle = f > 0.82 ? 'rgba(255,140,120,.85)' : 'rgba(140,215,255,.7)';
+          S.lineWidth = 2.6;
+          S.beginPath(); S.arc(0, 0, RA, -Math.PI / 2, -Math.PI / 2 + TAU * f); S.stroke();
+        }
+        S.globalCompositeOperation = 'source-over';
+      }
+      // step ticks: one lit tick per completed step (capped at 12)
+      if (num(C.stepTicks, 0) >= 0.5) {
+        const n = 12, stepNow = Math.max(0, Math.round(liveNumber('step')));
+        const RT = R * 0.8, a0 = Math.PI * 0.62, a1 = Math.PI * 1.38;
+        for (let i = 0; i < n; i++) {
+          const a = a0 + (a1 - a0) * (i / (n - 1));
+          const lit = i < Math.min(stepNow, n);
+          S.strokeStyle = lit ? 'rgba(255,214,150,.8)' : 'rgba(210,220,240,.14)';
+          S.lineWidth = lit ? 2 : 1.2;
+          S.beginPath();
+          S.moveTo(Math.cos(a) * RT, Math.sin(a) * RT);
+          S.lineTo(Math.cos(a) * (RT + 5), Math.sin(a) * (RT + 5));
+          S.stroke();
+        }
+      }
+      // tool beam: radial line + the tool's name, fading over ~1.4s
+      if (beamT >= 0) {
+        const u = beamT / 1.4, k = Math.sin(Math.PI * Math.min(1, u));
+        S.save(); S.rotate(beamA);
+        S.globalCompositeOperation = 'lighter';
+        const x0 = R + 6, x1 = R + 40 + 150 * u;
+        const lg = S.createLinearGradient(x0, 0, x1, 0);
+        lg.addColorStop(0, 'rgba(180,230,255,' + (0.5 * k) + ')');
+        lg.addColorStop(1, 'rgba(180,230,255,0)');
+        S.strokeStyle = lg; S.lineWidth = 1.4;
+        S.beginPath(); S.moveTo(x0, 0); S.lineTo(x1, 0); S.stroke();
+        S.globalCompositeOperation = 'source-over';
+        S.fillStyle = 'rgba(225,240,255,' + (0.9 * k) + ')';
+        S.font = '600 6px ' + FONT;
+        S.textAlign = 'left'; S.textBaseline = 'middle';
+        S.fillText(beamName, x1 + 4, 0);
+        S.restore();
+      }
+      S.restore();
+      // error wash: additive red over the whole frame, under a second
+      if (errT >= 0) {
+        const k = Math.sin(Math.PI * Math.min(1, errT / 0.9));
+        S.globalCompositeOperation = 'lighter';
+        S.fillStyle = 'rgba(255,70,60,' + (0.05 * k) + ')';
+        S.fillRect(0, 0, W, H);
+        S.globalCompositeOperation = 'source-over';
+      }
+    }
     function countParticles() {
       return runners.length + comets.length + pulses.length + hazes.length + flares.length + flyers.length + bokehs.length;
     }
@@ -1957,6 +2075,7 @@ const HalofluxEngine = (() => {
       computeDrive(dt);
       updateSpin(dt);
       updateSwitch(dt);
+      updateGauges(dt);
       statsTick(dt);
       if (!ready || disposed) return;
       applyRebuilds();

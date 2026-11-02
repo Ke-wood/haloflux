@@ -153,18 +153,18 @@ function boot(opts) {
 
 /* ================= 1. metadata ================= */
 ok(!!E && typeof E.create === 'function', 'HalofluxEngine.create is a function');
-ok(E.PARAMS.length === 93, 'PARAMS count = 93 (got ' + E.PARAMS.length + ')');
+ok(E.PARAMS.length === 101, 'PARAMS count = 101 (got ' + E.PARAMS.length + ')');
 const keys = E.PARAMS.map(p => p[0]);
 ok(new Set(keys).size === keys.length, 'PARAMS keys are unique');
 const groups = [...new Set(E.PARAMS.map(p => p[5]))];
-ok(groups.join(',') === '全局,圆环,圈内,环外,空间层次,插件,分层,配色', 'groups + order = ' + groups.join(' | '));
+ok(groups.join(',') === '全局,圆环,圈内,环外,空间层次,插件,分层,数据,HUD,配色', 'groups + order = ' + groups.join(' | '));
 const layer = E.PARAMS.filter(p => p[5] === '分层').map(p => p[0]);
 ok(layer.join(',') === 'fieldBlur,ringData,guardOn,guardStrength,guardRadius,guardColW,plateAlpha,fieldBright,guardBlur,motionQuiet,readFade',
   'layer-separation group = ' + layer.join(','));
 ok(E.BASE.guardOn === 1 && E.BASE.fieldBlur === 0 && E.BASE.guardColW === 0,
   'layer separation defaults (guard on, blur off, column guard off)');
 const tint = E.PARAMS.filter(p => p[5] === '配色').map(p => p[0]);
-ok(tint.join(',') === 'tintAmount,tintHue,tintSat', 'theme-colour group = ' + tint.join(','));
+ok(tint.join(',') === 'tintAmount,tintHue,tintSat,tintFollow', 'theme-colour group = ' + tint.join(','));
 ok(E.BASE.tintAmount === 0 && E.BASE.tintHue === 210, 'theme colour is off by default (amount 0)');
 const plug = E.PARAMS.filter(p => p[5] === '插件').map(p => p[0]);
 ok(plug.join(',') === 'opacity,blend,idleMotion,activityGain,centerX,centerY,scale,hudOn,feedOn,dataMode,backdrop,'
@@ -176,7 +176,7 @@ const flag = k => row(k)[6];
 ok(flag('ringWidth') === 'resize' && flag('rimWidth') === 'slots' && flag('webBright') === 'web'
   && flag('webBlur') === 'web' && flag('flyerCount') === 'flyers', 'rebuild flags preserved');
 ok(E.PARAMS.filter(p => p[6]).length === 5, 'exactly 5 rebuild params');
-ok(Object.keys(E.BASE).length === 93 && keys.every(k => k in E.BASE), 'BASE covers all 93 keys');
+ok(Object.keys(E.BASE).length === 101 && keys.every(k => k in E.BASE), 'BASE covers all 101 keys');
 ok(row('idleMotion')[1] === '静默态强度', 'idleMotion label = 静默态强度');
 ok(E.BASE.idleMotion === 0.06 && E.PRESETS.MINE.idleMotion === 0.06, 'idleMotion default = 0.06');
 ok(E.BASE.camera === 1, 'BASE.camera untouched (still 1; mount turns it off)');
@@ -203,11 +203,11 @@ ok(!!eng, 'create({canvas, live, params}) returns an engine');
 ok(opCount === ctxOpsBeforeCreate, 'create() performs no canvas work (waits for start/resize)');
 ok(['setParams', 'getParams', 'resize', 'start', 'stop', 'dispose', 'revolve', 'debug']
   .every(k => typeof eng[k] === 'function'), 'api includes revolve() and debug()');
-ok(Object.keys(eng.getParams()).length === 93, 'getParams() returns the 93-key copy');
+ok(Object.keys(eng.getParams()).length === 101, 'getParams() returns the 101-key copy');
 const dbgKeys = ['ringRot', 'spinOffset', 'env', 'out', 'mo', 'present', 'running'];
 const d0 = eng.debug();
 ok(dbgKeys.every(k => k in d0), 'debug() exposes ' + dbgKeys.join('/'));
-ok(typeof d0.params === 'object' && Object.keys(d0.params).length === 93, 'debug().params is the 93-key copy');
+ok(typeof d0.params === 'object' && Object.keys(d0.params).length === 101, 'debug().params is the 101-key copy');
 ok(d0.present === true && d0.running === false && d0.env === 0 && d0.out === 0 && d0.mo === 0,
   'debug() initial: present (field missing ⇒ true), not running, level 0');
 
@@ -595,6 +595,35 @@ ok(threw4, 'create() without a canvas throws a clear error');
   b.eng.setParams({ guardStrength: 0.4, guardRadius: 0.9, ringData: 0 });
   b.tick(4, 1000 / 60);
   ok(true, 'ringData=0 (bare light band) renders without throwing');
+  b.kill();
+})();
+
+/* ================= 20. live gauges (each one a switch) ================= */
+(function () {
+  const lv = {
+    activity: 0.8, sessionPresent: true, running: true, step: 3,
+    contextTokens: 42000, contextLimit: 100000,
+    tools: [{ id: '1', name: 'Bash', state: 'ok', t: 0 }], pullTokens: () => [],
+  };
+  const b = boot({ live: lv, params: { attackMs: 100 } });
+  b.tick(20, 1000 / 60);
+  const d = b.eng.debug();
+  ok(d.params.ctxArc === 1 && d.params.stepTicks === 1 && d.params.toolBeam === 1,
+    'gauges are on by default (ctxArc / stepTicks / toolBeam)');
+  ok(true, 'context arc + step ticks render with live numbers (no throw)');
+
+  b.eng.setParams({ ctxArc: 0, toolBeam: 0, errFx: 0, stepTicks: 0 });
+  b.tick(4, 1000 / 60);
+  ok(b.eng.debug().params.ctxArc === 0, 'every gauge can be switched off');
+
+  lv.tools.push({ id: '2', name: 'Read', state: 'error', t: 0 });
+  b.tick(10, 1000 / 60);
+  ok(true, 'a failed tool fires the error wash without throwing');
+
+  b.eng.setParams({ ctxArc: 1, toolBeam: 1, errFx: 1, stepTicks: 1 });
+  lv.tools.push({ id: '3', name: 'Write', state: 'ok', t: 0 });
+  b.tick(10, 1000 / 60);
+  ok(true, 'a new tool call draws a labelled beam without throwing');
   b.kill();
 })();
 

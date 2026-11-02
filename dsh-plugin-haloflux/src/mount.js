@@ -110,9 +110,42 @@ const HalofluxPlugin = (() => {
 .hfx-dim{color:var(--dsw-alias-label-tertiary,#6a7285)}
 .hfx-num{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary,#e6ecff)}
 .hfx-pink{color:#ff9ecb}.hfx-cyan{color:#7fd8ff}
+/* HUD scale: the individual 'scale' property keeps the corner anchors (transform is used for centring) */
+.hfx-stats{transform-origin:top center;scale:var(--hfx-hud-scale,1)}
+.hfx-feed{transform-origin:bottom left;scale:var(--hfx-hud-scale,1)}
+.hfx-tools{transform-origin:bottom right;scale:var(--hfx-hud-scale,1)}
+.hfx-console{transform-origin:top right;scale:var(--hfx-hud-scale,1)}
 `;
 
   /* ---------- params live in the shared store (src/state.js) ---------- */
+
+  /** The DSH brand colour as a hue, for "follow the theme colour" (null = unavailable). */
+  function themeHue() {
+    try {
+      if (typeof getComputedStyle !== 'function') return null;
+      const el = document.documentElement;
+      if (!el) return null;
+      const raw = String(getComputedStyle(el).getPropertyValue('--dsw-alias-brand-primary') || '').trim();
+      let r = 0, g = 0, b = 0, m;
+      if ((m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(raw))) {
+        let hx = m[1];
+        if (hx.length === 3) hx = hx[0] + hx[0] + hx[1] + hx[1] + hx[2] + hx[2];
+        r = parseInt(hx.slice(0, 2), 16) / 255;
+        g = parseInt(hx.slice(2, 4), 16) / 255;
+        b = parseInt(hx.slice(4, 6), 16) / 255;
+      } else if ((m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(raw))) {
+        r = Number(m[1]) / 255; g = Number(m[2]) / 255; b = Number(m[3]) / 255;
+      } else return null;
+      if (!isFinite(r) || !isFinite(g) || !isFinite(b)) return null;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+      if (d < 0.02) return null;
+      let hue;
+      if (mx === r) hue = ((g - b) / d) % 6;
+      else if (mx === g) hue = (b - r) / d + 2;
+      else hue = (r - g) / d + 4;
+      return ((hue * 60) + 360) % 360;
+    } catch { return null; }
+  }
 
   function prefersReducedMotion() {
     try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
@@ -392,7 +425,9 @@ const HalofluxPlugin = (() => {
     const rawTint = Number(params.tintAmount);
     const tintAmt = Math.max(0, Math.min(1, isFinite(rawTint) ? rawTint : 0));
     const rawHue = Number(params.tintHue);
-    const tintHue = ((isFinite(rawHue) ? rawHue : 210) % 360 + 360) % 360;
+    const followTint = Number(params.tintFollow) >= 0.5;
+    const themeH = followTint ? themeHue() : null;
+    const tintHue = themeH != null ? themeH : ((isFinite(rawHue) ? rawHue : 210) % 360 + 360) % 360;
     const rawSat = Number(params.tintSat);
     const tintSat = Math.max(0.2, Math.min(3, isFinite(rawSat) ? rawSat : 1.6));
     const filters = [];
@@ -406,6 +441,21 @@ const HalofluxPlugin = (() => {
         'saturate(' + tintSat.toFixed(2) + ')');
     }
     const hudVisible = params.hudOn >= 0.5 && params.opacity > 0.02;
+
+    // HUD layout: base font scale + edge offsets, all live from the console
+    const rawScale = Number(params.hudScale);
+    const hudScale = Math.max(0.8, Math.min(1.6, isFinite(rawScale) ? rawScale : 1));
+    const rawInset = Number(params.hudInset);
+    const hudInset = Math.max(4, Math.min(48, isFinite(rawInset) ? rawInset : 12));
+    const rawTop = Number(params.hudTop);
+    const hudTop = Math.max(0, Math.min(80, isFinite(rawTop) ? rawTop : 6));
+    const rootVars = {
+      pointerEvents: 'none',
+      '--hfx-plate': platePct + '%',
+      '--hfx-hud-scale': String(hudScale),
+      '--hfx-hud-inset': hudInset + 'px',
+      '--hfx-hud-top': hudTop + 'px',
+    };
 
     // low-pass reading column: the SAME frame is mirrored onto a second canvas, blurred and
     // masked to the column, while the main canvas gets a matching hole. Sharp outside,
@@ -448,7 +498,7 @@ const HalofluxPlugin = (() => {
       resetDefault: () => HalofluxState.resetDefault(),
     };
 
-    return h('div', { className: 'hfx-root', ref: hostRef, 'aria-hidden': open ? undefined : true, style: { pointerEvents: 'none', '--hfx-plate': platePct + '%' } },
+    return h('div', { className: 'hfx-root', ref: hostRef, 'aria-hidden': open ? undefined : true, style: rootVars },
       h('style', null, BASE_CSS),
       h('canvas', {
         ref: canvasRef,

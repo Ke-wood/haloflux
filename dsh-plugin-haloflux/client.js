@@ -163,10 +163,19 @@ window.__ModuleLoader__.load({
         ['guardBlur', '正文列低通虚化 (px, 0=关)', 0, 24, 0.5, '分层'],
         ['motionQuiet', '静读：整体减弱运动', 0, 1, 0.1, '分层'],
         ['readFade', '阅读时自动降亮 (0关 1开)', 0, 1, 1, '分层'],
+        /* ---- round 7: live gauges drawn on the field (each one a switch) ---- */
+        ['ctxArc', '上下文占用弧 (0关 1开)', 0, 1, 1, '数据'],
+        ['toolBeam', '工具调用带名光带 (0关 1开)', 0, 1, 1, '数据'],
+        ['errFx', '失败提示 红闪 (0关 1开)', 0, 1, 1, '数据'],
+        ['stepTicks', '步骤刻度 (0关 1开)', 0, 1, 1, '数据'],
+        ['hudScale', 'HUD 缩放', 0.8, 1.6, 0.05, 'HUD'],
+        ['hudInset', 'HUD 边距 px', 4, 48, 1, 'HUD'],
+        ['hudTop', 'HUD 顶距 px', 0, 80, 1, 'HUD'],
         /* ---- round 6: theme colour (applied by the host as a CSS filter chain) ---- */
         ['tintAmount', '主题染色 强度 (0=原色)', 0, 1, 0.05, '配色'],
         ['tintHue', '主题色相 0-360', 0, 360, 5, '配色'],
         ['tintSat', '主题饱和 增强', 0.2, 3, 0.05, '配色'],
+        ['tintFollow', '跟随 DSH 主题色 (0关 1开)', 0, 1, 1, '配色'],
       ];
 
       const BASE = {
@@ -187,6 +196,8 @@ window.__ModuleLoader__.load({
         /* layer separation: off by default for blur, guard on at a light strength */
         fieldBlur: 0, ringData: 1, guardOn: 1, guardStrength: 0.4, guardRadius: 0.9, guardColW: 0, plateAlpha: 0.72,
         fieldBright: 1, guardBlur: 0, motionQuiet: 0, readFade: 0,
+        ctxArc: 1, toolBeam: 1, errFx: 1, stepTicks: 1,
+        hudScale: 1, hudInset: 12, hudTop: 6, tintFollow: 0,
         tintAmount: 0, tintHue: 210, tintSat: 1.6,
       };
 
@@ -1751,6 +1762,9 @@ window.__ModuleLoader__.load({
             S.globalCompositeOperation = 'source-over';
           }
 
+          // live gauges (context arc / step ticks / tool beam / error wash)
+          drawGauges();
+
           // text guard: punch the light field down where the reading text sits, so the
           // two planes are visibly separate (switchable; no-op when guardOn is off)
           applyTextGuard(S);
@@ -1943,6 +1957,110 @@ window.__ModuleLoader__.load({
           }
           g.restore();
         }
+        /* ---------- v0.6.0: live gauges drawn on the field (all switchable) ---------- */
+        let toolSeen = '';              // last tool id already given a beam
+        let beamT = -1, beamName = '', beamA = 0;
+        let errSeen = 0, errT = -1;
+        let ctxShown = 0;               // eased context occupancy (arc length follows it)
+
+        /** -1 = unknown (no context window from the host yet) */
+        function gaugeCtxFrac() {
+          const lim = liveNumber('contextLimit');
+          const used = liveNumber('contextTokens');
+          return lim > 0 ? clamp(used / lim, 0, 1) : -1;
+        }
+        function updateGauges(dt) {
+          const f = gaugeCtxFrac();
+          if (f >= 0) ctxShown += (f - ctxShown) * (1 - Math.exp(-dt * 3));
+          // one labelled beam per new tool call (angle derives from the tool name)
+          if (num(C.toolBeam, 0) >= 0.5) {
+            const list = live && Array.isArray(live.tools) ? live.tools : [];
+            if (!list.length) toolSeen = '';
+            else {
+              const last = list[list.length - 1] || {};
+              const id = String(last.id || last.name || '');
+              if (id && id !== toolSeen) {
+                toolSeen = id;
+                const name = String(last.name || '');
+                if (name) {
+                  beamT = 0; beamName = name.slice(0, 16);
+                  let h0 = 0;
+                  for (let i = 0; i < name.length; i++) h0 = (h0 * 31 + name.charCodeAt(i)) | 0;
+                  beamA = (Math.abs(h0) % 1000) / 1000 * TAU;
+                }
+              }
+            }
+          }
+          if (beamT >= 0) { beamT += dt; if (beamT > 1.4) beamT = -1; }
+          // error flash: a newly failed tool washes the field red for <1s
+          if (num(C.errFx, 0) >= 0.5) {
+            const list = live && Array.isArray(live.tools) ? live.tools : [];
+            let errs = 0;
+            for (const t of list) if (t && String(t.state) === 'error') errs++;
+            if (errs > errSeen) { errSeen = errs; errT = 0; }
+            else if (errs < errSeen) errSeen = errs;
+          }
+          if (errT >= 0) { errT += dt; if (errT > 0.9) errT = -1; }
+        }
+        function drawGauges() {
+          S.setTransform(DPR, 0, 0, DPR, 0, 0);
+          S.save(); S.translate(cx, cy);
+          // context occupancy: an arc inside the ring, cyan until it gets tight
+          if (num(C.ctxArc, 0) >= 0.5 && gaugeCtxFrac() >= 0) {
+            const RA = R * 0.9, f = clamp(ctxShown, 0, 1);
+            S.globalCompositeOperation = 'lighter';
+            S.strokeStyle = 'rgba(120,200,255,.10)'; S.lineWidth = 2.2;
+            S.beginPath(); S.arc(0, 0, RA, -Math.PI / 2, -Math.PI / 2 + TAU); S.stroke();
+            if (f > 0.002) {
+              S.strokeStyle = f > 0.82 ? 'rgba(255,140,120,.85)' : 'rgba(140,215,255,.7)';
+              S.lineWidth = 2.6;
+              S.beginPath(); S.arc(0, 0, RA, -Math.PI / 2, -Math.PI / 2 + TAU * f); S.stroke();
+            }
+            S.globalCompositeOperation = 'source-over';
+          }
+          // step ticks: one lit tick per completed step (capped at 12)
+          if (num(C.stepTicks, 0) >= 0.5) {
+            const n = 12, stepNow = Math.max(0, Math.round(liveNumber('step')));
+            const RT = R * 0.8, a0 = Math.PI * 0.62, a1 = Math.PI * 1.38;
+            for (let i = 0; i < n; i++) {
+              const a = a0 + (a1 - a0) * (i / (n - 1));
+              const lit = i < Math.min(stepNow, n);
+              S.strokeStyle = lit ? 'rgba(255,214,150,.8)' : 'rgba(210,220,240,.14)';
+              S.lineWidth = lit ? 2 : 1.2;
+              S.beginPath();
+              S.moveTo(Math.cos(a) * RT, Math.sin(a) * RT);
+              S.lineTo(Math.cos(a) * (RT + 5), Math.sin(a) * (RT + 5));
+              S.stroke();
+            }
+          }
+          // tool beam: radial line + the tool's name, fading over ~1.4s
+          if (beamT >= 0) {
+            const u = beamT / 1.4, k = Math.sin(Math.PI * Math.min(1, u));
+            S.save(); S.rotate(beamA);
+            S.globalCompositeOperation = 'lighter';
+            const x0 = R + 6, x1 = R + 40 + 150 * u;
+            const lg = S.createLinearGradient(x0, 0, x1, 0);
+            lg.addColorStop(0, 'rgba(180,230,255,' + (0.5 * k) + ')');
+            lg.addColorStop(1, 'rgba(180,230,255,0)');
+            S.strokeStyle = lg; S.lineWidth = 1.4;
+            S.beginPath(); S.moveTo(x0, 0); S.lineTo(x1, 0); S.stroke();
+            S.globalCompositeOperation = 'source-over';
+            S.fillStyle = 'rgba(225,240,255,' + (0.9 * k) + ')';
+            S.font = '600 6px ' + FONT;
+            S.textAlign = 'left'; S.textBaseline = 'middle';
+            S.fillText(beamName, x1 + 4, 0);
+            S.restore();
+          }
+          S.restore();
+          // error wash: additive red over the whole frame, under a second
+          if (errT >= 0) {
+            const k = Math.sin(Math.PI * Math.min(1, errT / 0.9));
+            S.globalCompositeOperation = 'lighter';
+            S.fillStyle = 'rgba(255,70,60,' + (0.05 * k) + ')';
+            S.fillRect(0, 0, W, H);
+            S.globalCompositeOperation = 'source-over';
+          }
+        }
         function countParticles() {
           return runners.length + comets.length + pulses.length + hazes.length + flares.length + flyers.length + bokehs.length;
         }
@@ -1963,6 +2081,7 @@ window.__ModuleLoader__.load({
           computeDrive(dt);
           updateSpin(dt);
           updateSwitch(dt);
+          updateGauges(dt);
           statsTick(dt);
           if (!ready || disposed) return;
           applyRebuilds();
@@ -3703,6 +3822,28 @@ window.__ModuleLoader__.load({
         );
       }
 
+      /** Console-only chrome: the parameter search box and the theme-colour swatches. */
+      const CSS_TUNE = `
+    .hfx-search{box-sizing:border-box;width:100%;margin:0 0 8px;padding:5px 8px;border-radius:7px;
+      font:inherit;font-size:11px;letter-spacing:.04em;color:${T_LABEL_1};
+      background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) 60%,transparent);
+      border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 70%,transparent);outline:none}
+    .hfx-search:focus{border-color:${T_ACCENT}}
+    .hfx-swatches{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:0 0 8px}
+    .hfx-swatch{font:inherit;font-size:10px;letter-spacing:.04em;cursor:pointer;padding:2px 7px 2px 4px;
+      display:inline-flex;align-items:center;gap:5px;border-radius:999px;color:${T_LABEL_2};
+      background:transparent;border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 70%,transparent)}
+    .hfx-swatch:hover{color:${T_LABEL_1}}
+    .hfx-swatch.on{color:${T_LABEL_1};border-color:${T_ACCENT}}
+    .hfx-swatch-dot{width:10px;height:10px;border-radius:50%;flex:none}
+    .hfx-search-none{padding:10px 2px;color:${T_LABEL_3};font-size:11px}
+    `;
+
+      /** Theme-colour presets: label + hue (all keep the current strength). */
+      const TINT_SWATCHES = [
+        ['冰蓝', 210], ['青绿', 165], ['紫', 285], ['品红', 320], ['琥珀', 35], ['红', 0],
+      ];
+
       function Console(props) {
         const t = safeT(props);
         const open = props.open === true;
@@ -3737,6 +3878,17 @@ window.__ModuleLoader__.load({
         const [importOpen, setImportOpen] = React.useState(false);
         const [importText, setImportText] = React.useState('');
         const [flash, setFlash] = React.useState('');
+        const [query, setQuery] = React.useState('');
+
+        // parameter search across every group (label or key); groups stay in PARAMS order
+        const q = query.trim().toLowerCase();
+        const view = React.useMemo(() => {
+          if (!q) return groups;
+          const hit = (entry) => (entry.label + ' ' + entry.key).toLowerCase().indexOf(q) >= 0;
+          return groups
+            .map((group) => ({ name: group.name, items: group.items.filter(hit) }))
+            .filter((group) => group.items.length > 0);
+        }, [groups, q]);
 
         const timer = React.useRef(0);
         React.useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
@@ -3807,6 +3959,7 @@ window.__ModuleLoader__.load({
           'aria-label': t('ui.consoleTitle'), onKeyDown,
         },
           h('style', null, CSS_CONSOLE),
+          h('style', null, CSS_TUNE),
           h('div', { className: 'hfx-console-top' },
             h('span', { className: 'hfx-title' }, t('ui.consoleTitle')),
             presetNames.map((name) => h('button', {
@@ -3827,20 +3980,37 @@ window.__ModuleLoader__.load({
               title: t('ui.close'), 'aria-label': t('ui.close'), onClick: close,
             }, '\u2715')
           ),
-          importOpen ? h('textarea', {
-            className: 'hfx-ta', value: importText, spellCheck: false,
+          h('div', { className: 'hfx-swatches' },
+            TINT_SWATCHES.map(([label, hue]) => h('button', {
+              key: 'tint-' + hue, type: 'button',
+              className: 'hfx-swatch' + (Number(params.tintAmount) > 0.5 && Math.round(Number(params.tintHue)) === hue ? ' on' : ''),
+              title: '\u4e3b\u9898\u8272 ' + label,
+              onClick: () => setParams({ tintAmount: 1, tintHue: hue, tintSat: 1.6 }),
+            }, h('span', { className: 'hfx-swatch-dot', style: { background: 'hsl(' + hue + ',85%,62%)' } }), label)),
+            h('button', {
+              type: 'button', className: 'hfx-swatch' + (Number(params.tintAmount) <= 0.5 ? ' on' : ''),
+              title: '\u6062\u590d\u539f\u8272', onClick: () => setParams({ tintAmount: 0 }),
+            }, '\u539f\u8272')
+          ),
+          importOpen ? h('textarea', {        className: 'hfx-ta', value: importText, spellCheck: false,
             placeholder: t('ui.import'), 'aria-label': t('ui.import'),
             onChange: (event) => setImportText(event.target.value),
             onKeyDown: onImportKey,
           }) : null,
           h('div', { className: 'hfx-body hfx-params' },
-            groups.length
-              ? groups.map((group) => h(ParamGroup, {
+            h('input', {
+              className: 'hfx-search', type: 'search', value: query,
+              placeholder: '\u641c\u7d22\u53c2\u6570\uff08\u540d\u79f0\u6216 key\uff0c\u5982 guard / \u8272\uff09',
+              'aria-label': '\u641c\u7d22\u53c2\u6570',
+              onChange: (event) => setQuery(event.target.value),
+            }),
+            view.length
+              ? view.map((group) => h(ParamGroup, {
                 key: group.name, group, params, defaults, setParams, t,
-                collapsed: collapsed[group.name] === true,
+                collapsed: q ? false : collapsed[group.name] === true,
                 onToggle: () => toggleGroup(group.name),
               }))
-              : h('div', { className: 'hfx-empty' }, t('ui.empty'))
+              : h('div', { className: 'hfx-search-none' }, '\u6ca1\u6709\u5339\u914d\u7684\u53c2\u6570')
           ),
           h('div', { className: 'hfx-hint' },
             h('span', { className: 'hfx-hint-text' }, t('ui.hint')),
@@ -4198,9 +4368,42 @@ window.__ModuleLoader__.load({
     .hfx-dim{color:var(--dsw-alias-label-tertiary,#6a7285)}
     .hfx-num{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary,#e6ecff)}
     .hfx-pink{color:#ff9ecb}.hfx-cyan{color:#7fd8ff}
+    /* HUD scale: the individual 'scale' property keeps the corner anchors (transform is used for centring) */
+    .hfx-stats{transform-origin:top center;scale:var(--hfx-hud-scale,1)}
+    .hfx-feed{transform-origin:bottom left;scale:var(--hfx-hud-scale,1)}
+    .hfx-tools{transform-origin:bottom right;scale:var(--hfx-hud-scale,1)}
+    .hfx-console{transform-origin:top right;scale:var(--hfx-hud-scale,1)}
     `;
 
       /* ---------- params live in the shared store (src/state.js) ---------- */
+
+      /** The DSH brand colour as a hue, for "follow the theme colour" (null = unavailable). */
+      function themeHue() {
+        try {
+          if (typeof getComputedStyle !== 'function') return null;
+          const el = document.documentElement;
+          if (!el) return null;
+          const raw = String(getComputedStyle(el).getPropertyValue('--dsw-alias-brand-primary') || '').trim();
+          let r = 0, g = 0, b = 0, m;
+          if ((m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(raw))) {
+            let hx = m[1];
+            if (hx.length === 3) hx = hx[0] + hx[0] + hx[1] + hx[1] + hx[2] + hx[2];
+            r = parseInt(hx.slice(0, 2), 16) / 255;
+            g = parseInt(hx.slice(2, 4), 16) / 255;
+            b = parseInt(hx.slice(4, 6), 16) / 255;
+          } else if ((m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(raw))) {
+            r = Number(m[1]) / 255; g = Number(m[2]) / 255; b = Number(m[3]) / 255;
+          } else return null;
+          if (!isFinite(r) || !isFinite(g) || !isFinite(b)) return null;
+          const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+          if (d < 0.02) return null;
+          let hue;
+          if (mx === r) hue = ((g - b) / d) % 6;
+          else if (mx === g) hue = (b - r) / d + 2;
+          else hue = (r - g) / d + 4;
+          return ((hue * 60) + 360) % 360;
+        } catch { return null; }
+      }
 
       function prefersReducedMotion() {
         try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
@@ -4480,7 +4683,9 @@ window.__ModuleLoader__.load({
         const rawTint = Number(params.tintAmount);
         const tintAmt = Math.max(0, Math.min(1, isFinite(rawTint) ? rawTint : 0));
         const rawHue = Number(params.tintHue);
-        const tintHue = ((isFinite(rawHue) ? rawHue : 210) % 360 + 360) % 360;
+        const followTint = Number(params.tintFollow) >= 0.5;
+        const themeH = followTint ? themeHue() : null;
+        const tintHue = themeH != null ? themeH : ((isFinite(rawHue) ? rawHue : 210) % 360 + 360) % 360;
         const rawSat = Number(params.tintSat);
         const tintSat = Math.max(0.2, Math.min(3, isFinite(rawSat) ? rawSat : 1.6));
         const filters = [];
@@ -4494,6 +4699,21 @@ window.__ModuleLoader__.load({
             'saturate(' + tintSat.toFixed(2) + ')');
         }
         const hudVisible = params.hudOn >= 0.5 && params.opacity > 0.02;
+
+        // HUD layout: base font scale + edge offsets, all live from the console
+        const rawScale = Number(params.hudScale);
+        const hudScale = Math.max(0.8, Math.min(1.6, isFinite(rawScale) ? rawScale : 1));
+        const rawInset = Number(params.hudInset);
+        const hudInset = Math.max(4, Math.min(48, isFinite(rawInset) ? rawInset : 12));
+        const rawTop = Number(params.hudTop);
+        const hudTop = Math.max(0, Math.min(80, isFinite(rawTop) ? rawTop : 6));
+        const rootVars = {
+          pointerEvents: 'none',
+          '--hfx-plate': platePct + '%',
+          '--hfx-hud-scale': String(hudScale),
+          '--hfx-hud-inset': hudInset + 'px',
+          '--hfx-hud-top': hudTop + 'px',
+        };
 
         // low-pass reading column: the SAME frame is mirrored onto a second canvas, blurred and
         // masked to the column, while the main canvas gets a matching hole. Sharp outside,
@@ -4536,7 +4756,7 @@ window.__ModuleLoader__.load({
           resetDefault: () => HalofluxState.resetDefault(),
         };
 
-        return h('div', { className: 'hfx-root', ref: hostRef, 'aria-hidden': open ? undefined : true, style: { pointerEvents: 'none', '--hfx-plate': platePct + '%' } },
+        return h('div', { className: 'hfx-root', ref: hostRef, 'aria-hidden': open ? undefined : true, style: rootVars },
           h('style', null, BASE_CSS),
           h('canvas', {
             ref: canvasRef,
