@@ -24,13 +24,17 @@ const HalofluxHud = (() => {
   const COMMIT_MS = 120;       // slider idle delay before we push to params
   const FLASH_MS = 2000;       // "copied" note lifetime
   const TOKEN_TAIL = 140;      // chars of token stream shown
-  const PRESET_ORDER = ['A', 'B', 'MINE'];
+  const PRESET_ORDER = ['A', 'B', 'MINE', 'QUIET', 'EDGE', 'READ'];
   const FONT_STACK = '"JetBrains Mono",Consolas,ui-monospace,monospace';
 
   /** Plugin-owned defaults, mirroring mount.js `baseParams()`. */
   const PLUGIN_DEFAULTS = {
     opacity: 0.55, blend: 0, idleMotion: 0.15, activityGain: 1,
     centerX: 0, centerY: 0, scale: 1, hudOn: 1, feedOn: 1,
+    // v0.4.0 layer separation (mirrors engine BASE)
+    fieldBlur: 0, ringData: 1, guardOn: 1, guardStrength: 0.4, guardRadius: 0.9, guardColW: 0, plateAlpha: 0.72,
+    fieldBright: 1, guardBlur: 0, motionQuiet: 0, readFade: 0,
+    tintAmount: 0, tintHue: 210, tintSat: 1.6,
   };
 
   /* ------------------------------------------------------------------ *
@@ -206,7 +210,7 @@ const HalofluxHud = (() => {
   max-width:calc(100vw - 320px);overflow:hidden;padding:4px 9px;border-radius:8px;box-sizing:border-box;
   pointer-events:none;contain:layout style;
   font:11px/1.3 ${FONT_STACK};letter-spacing:.06em;color:${T_LABEL_2};
-  background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) 72%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) var(--hfx-plate,72%),transparent);
   border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 70%,transparent);
   backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
 .hfx-stats .hfx-kpi{display:flex;align-items:baseline;gap:5px;min-width:56px;overflow:hidden}
@@ -283,7 +287,7 @@ const HalofluxHud = (() => {
   display:flex;flex-direction:column;gap:6px;contain:layout style;
   font:11px/1.45 ${FONT_STACK};letter-spacing:.06em;color:${T_LABEL_2}}
 .hfx-pane{box-sizing:border-box;padding:5px 8px 6px;border-radius:8px;
-  background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) 72%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) var(--hfx-plate,72%),transparent);
   border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 62%,transparent);
   backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
 .hfx-pane .hfx-hd{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:${T_CAPTION};
@@ -349,7 +353,7 @@ const HalofluxHud = (() => {
 .hfx-tools{position:absolute;right:var(--hfx-hud-inset,12px);bottom:var(--hfx-hud-inset,12px);width:252px;pointer-events:none;box-sizing:border-box;
   padding:5px 8px 6px;border-radius:8px;contain:layout style;
   font:11px/1.45 ${FONT_STACK};letter-spacing:.06em;color:${T_LABEL_2};
-  background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) 72%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) var(--hfx-plate,72%),transparent);
   border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 62%,transparent);
   backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
 .hfx-tools .hfx-hd{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:${T_CAPTION};

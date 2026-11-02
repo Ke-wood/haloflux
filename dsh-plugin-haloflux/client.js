@@ -151,6 +151,22 @@ window.__ModuleLoader__.load({
         ['switchFlash', '切换：亮度脉冲 强度', 0, 1, 0.05, '插件'],
         ['switchHue', '切换：色相扫过 强度', 0, 1, 0.05, '插件'],
         ['switchCam', '切换：镜头轻推 (0关 1开)', 0, 1, 1, '插件'],
+        /* ---- round 5: layer separation (text / field on different planes) ---- */
+        ['fieldBlur', '背景层虚化 景深 (px)', 0, 3, 0.1, '分层'],
+        ['ringData', '环上数据面板亮度 (0=纯光带)', 0, 1, 0.05, '分层'],
+        ['guardOn', '文字静区 总开关 (0关 1开)', 0, 1, 1, '分层'],
+        ['guardStrength', '文字静区 压制强度', 0, 1, 0.05, '分层'],
+        ['guardRadius', '中心静区半径 (×环半径)', 0, 1.4, 0.05, '分层'],
+        ['guardColW', '正文列静区宽度 px (0=关)', 0, 1600, 10, '分层'],
+        ['plateAlpha', 'HUD 底衬不透明度', 0, 1, 0.05, '分层'],
+        ['fieldBright', '背景层亮度 (整体压暗)', 0.3, 1.3, 0.05, '分层'],
+        ['guardBlur', '正文列低通虚化 (px, 0=关)', 0, 24, 0.5, '分层'],
+        ['motionQuiet', '静读：整体减弱运动', 0, 1, 0.1, '分层'],
+        ['readFade', '阅读时自动降亮 (0关 1开)', 0, 1, 1, '分层'],
+        /* ---- round 6: theme colour (applied by the host as a CSS filter chain) ---- */
+        ['tintAmount', '主题染色 强度 (0=原色)', 0, 1, 0.05, '配色'],
+        ['tintHue', '主题色相 0-360', 0, 360, 5, '配色'],
+        ['tintSat', '主题饱和 增强', 0.2, 3, 0.05, '配色'],
       ];
 
       const BASE = {
@@ -168,6 +184,10 @@ window.__ModuleLoader__.load({
         runLevel: 1, voidLevel: 0, attackMs: 800, releaseMs: 2600,
         revolveOnSwitch: 1, revolveMs: 1500, easeCurve: 1,
         revolveOuter: 1, switchReveal: 1, switchFlash: 0.6, switchHue: 0, switchCam: 1,
+        /* layer separation: off by default for blur, guard on at a light strength */
+        fieldBlur: 0, ringData: 1, guardOn: 1, guardStrength: 0.4, guardRadius: 0.9, guardColW: 0, plateAlpha: 0.72,
+        fieldBright: 1, guardBlur: 0, motionQuiet: 0, readFade: 0,
+        tintAmount: 0, tintHue: 210, tintSat: 1.6,
       };
 
       // 作者定稿默认（lab.html: BAKED_MINE, 2026-10-21）
@@ -191,6 +211,31 @@ window.__ModuleLoader__.load({
         B: { ...BASE },
       };
       PRESETS.MINE = { ...BASE, ...BAKED_MINE };
+      /** QUIET — 阅读优先：整层压暗 + 轻微失焦 + 环上数据面板减半，正文区留一层柔和的低亮度过渡。
+          一键回到“光在背景里”的状态，适合长时间读长文；动效和切换行为保持不变。 */
+      PRESETS.QUIET = {
+        ...BASE, ...BAKED_MINE,
+        opacity: 0.3, fieldBright: 0.82, fieldBlur: 1.1, ringData: 0.5,
+        guardOn: 1, guardStrength: 0.55, guardRadius: 0.95, guardColW: 0, plateAlpha: 0.88,
+        bokeh: 0, bokehBright: 0, runnerCount: 240, runnerBright: 0.35, cometBright: 0.7,
+        hazeBright: 0.8, flyerBright: 1.6, beamBright: 1.1, depthDim: 0.6,
+      };
+      /** EDGE — 构图解：把环收小、略上移，让正文整块落在环心暗区里。
+          不靠压暗/挖洞，靠“物理上不重叠”分出两层；想再收就继续降 scale。 */
+      PRESETS.EDGE = {
+        ...BASE, ...BAKED_MINE,
+        scale: 0.44, centerY: 0.1, ringWidth: 1.0, opacity: 0.5,
+        guardOn: 0, fieldBlur: 0, ringData: 1,
+      };
+      /** READ — 阅读组合：构图收环 + 正文列低通（模糊替代压暗）+ 减弱运动 + 滚动时自动降亮 */
+      PRESETS.READ = {
+        ...BASE, ...BAKED_MINE,
+        scale: 0.46, centerY: 0.08, ringWidth: 1.05, opacity: 0.42,
+        fieldBright: 0.9, fieldBlur: 0.6, ringData: 0.6,
+        guardOn: 1, guardStrength: 0.3, guardRadius: 0.95, guardColW: 780, guardBlur: 9,
+        motionQuiet: 1, plateAlpha: 0.9, readFade: 1,
+        bokeh: 0, bokehBright: 0, runnerCount: 300, runnerBright: 0.4, cometBright: 0.8, hazeBright: 0.9,
+      };
 
       const PMAP = {};
       for (const p of PARAMS) PMAP[p[0]] = { label: p[1], min: p[2], max: p[3], step: p[4], group: p[5], rebuild: p[6] };
@@ -242,6 +287,8 @@ window.__ModuleLoader__.load({
         if (!canvas || typeof canvas.getContext !== 'function') {
           throw new Error('HalofluxEngine.create: a canvas element is required');
         }
+        /** optional second surface for the masked low-pass copy (see guardBlur) */
+        const canvas2 = conf.canvas2 && typeof conf.canvas2.getContext === 'function' ? conf.canvas2 : null;
         const live = conf.live || null;
         const onStats = typeof conf.onStats === 'function' ? conf.onStats : null;
 
@@ -264,10 +311,12 @@ window.__ModuleLoader__.load({
         const backdrop = () => clamp(num(C.backdrop, 0), 0, 1);
 
         /* ---------- state ---------- */
-        let S = null, S_MAIN = null;
+        let S = null, S_MAIN = null, S2 = null;
         let DPR = 1, HAS_FILTER = false;
         let W = 0, H = 0, cx = 0, cy = 0, R = 0, RO = 0, RMAX = 0, thV = 0, thS = 0;
         let webBase = null, webLayers = [], trailC = null, glowC = null, laneC = null, farC = null, frameC = null;
+        /** last applied text-guard clearing (diagnostics only; null when the guard is off) */
+        let guardHit = null;
         let bokehSpr = null, scanPatDark = null, scanPatLight = null, scanGrad = null, webDisc = null;
         let curves = [], runners = [], comets = [], pulses = [], hazes = [], flares = [], flyers = [], flyBands = [];
         let strandLayers = [], wedges = [], slots = [], shots = [], bokehs = [];
@@ -429,6 +478,13 @@ window.__ModuleLoader__.load({
           if (!S) { ready = false; return; }
           S.setTransform(DPR, 0, 0, DPR, 0, 0);
           S_MAIN = S;
+          // optional second surface: the host masks a blurred copy of the same frame over the
+          // reading column, so the text area gets a low-pass version of the field instead of
+          // a punched-out hole (the "guardBlur" switch)
+          if (canvas2) {
+            canvas2.width = canvas.width; canvas2.height = canvas.height;
+            S2 = canvas2.getContext('2d');
+          }
           HAS_FILTER = 'filter' in S;
 
           // composition centre: original W*0.07 / H*0.5, now offset by centerX/centerY (-1..1 = half screen)
@@ -902,8 +958,9 @@ window.__ModuleLoader__.load({
           if (!bokehSpr) return;
           const k = 1 + 0.6 * C.parallax, z = 1 + (cam.z - 1) * k, ox = (cam.x - W / 2) * k, oy = (cam.y - H / 2) * k;
           S.setTransform(DPR, 0, 0, DPR, 0, 0); S.globalCompositeOperation = 'lighter';
+          const mk = motionK();
           for (const b of bokehs) {
-            b.x += b.vx * dtM; b.y += b.vy * dtM;
+            b.x += b.vx * dtM * mk; b.y += b.vy * dtM * mk;
             if (b.x < -0.15 * W) b.x += 1.3 * W;
             if (b.x > 1.15 * W) b.x -= 1.3 * W;
             if (b.y < -0.15 * H) b.y += 1.3 * H;
@@ -1090,8 +1147,7 @@ window.__ModuleLoader__.load({
           const band = RO - R, h = s.hpx;
           const cw = Math.max(1, Math.ceil(band * RING_SC)), chh = Math.max(1, Math.ceil((h + 2) * RING_SC));
           let c = s.c;
-          if (!c || c.width !== cw || c.height !== chh) {
-            c = newCanvas(cw, chh);
+          if (!c || c.width !== cw || c.height !== chh) {        c = newCanvas(cw, chh);
             if (!c) return;
             c.width = cw; c.height = chh;
           }
@@ -1171,12 +1227,16 @@ window.__ModuleLoader__.load({
             if (!s.c) { renderSlot(s); }
             else if (regen > 0 && actOn && rnd() < 0.02) { renderSlot(s); regen--; }
             if (!s.c) continue;
+            // ringData: the baked data panels (text + bars) can be dialled down to a bare
+            // light band, so the ring stops competing with the reading text
+            const rd = ringDataK();
+            if (rd <= 0.004) continue;
             S.save(); S.rotate(A);
             const hh = s.hpx + 2;
-            if (show < 1) S.globalAlpha = show;
+            if (show * rd < 1) S.globalAlpha = show * rd;
             S.drawImage(s.c, R, -hh / 2, band, hh);
             if (s.flash > 0.02) {
-              S.globalCompositeOperation = 'lighter'; S.globalAlpha = s.flash * show;
+              S.globalCompositeOperation = 'lighter'; S.globalAlpha = s.flash * show * rd;
               S.drawImage(s.c, R, -hh / 2, band, hh);
               S.globalCompositeOperation = 'source-over';
             }
@@ -1562,7 +1622,7 @@ window.__ModuleLoader__.load({
             tx.save(); tx.translate(R + 2, R + 2); tx.lineCap = 'round';
             for (let i = runners.length - 1; i >= 0; i--) {
               const r = runners[i];
-              r.t += dtM * C.runnerSpeed * (r.mode === 1 ? r.sp * surge : r.mode === 2 ? r.sp + 1.3 * r.t * r.t : r.sp);
+              r.t += dtM * motionK() * C.runnerSpeed * (r.mode === 1 ? r.sp * surge : r.mode === 2 ? r.sp + 1.3 * r.t * r.t : r.sp);
               if (r.t >= 1) {
                 // wind down while idle, respawn only while the session is active
                 if (actOn) runners[i] = newRunner(false); else runners.splice(i, 1);
@@ -1596,7 +1656,7 @@ window.__ModuleLoader__.load({
           if (G2) G2.translate(cx, cy);
           for (let i = comets.length - 1; i >= 0; i--) {
             const c = comets[i];
-            c.life += dtM;
+            c.life += dtM * motionK();
             const p = easeIO(Math.min(1, c.life / c.dur));
             const head = Math.min(1, p * (1 + c.win)), tail = Math.max(0, p * (1 + c.win) - c.win);
             const fade = c.life > c.dur ? Math.max(0, 1 - (c.life - c.dur) / 0.25) : 1;
@@ -1691,6 +1751,10 @@ window.__ModuleLoader__.load({
             S.globalCompositeOperation = 'source-over';
           }
 
+          // text guard: punch the light field down where the reading text sits, so the
+          // two planes are visibly separate (switchable; no-op when guardOn is off)
+          applyTextGuard(S);
+
           // fade the finished frame onto the visible canvas (single globalAlpha pass)
           S = S_MAIN;
           if (target !== S_MAIN) {
@@ -1701,6 +1765,16 @@ window.__ModuleLoader__.load({
             S.globalAlpha = outA;
             if (src) S.drawImage(src, 0, 0, W, H);
             S.globalAlpha = 1;
+            // mirror the finished frame onto the second surface (masked by the host);
+            // skipped entirely while guardBlur is off, so the default look pays nothing
+            if (S2 && src && num(C.guardBlur, 0) > 0.3) {
+              S2.setTransform(DPR, 0, 0, DPR, 0, 0);
+              S2.globalCompositeOperation = 'source-over';
+              S2.clearRect(-2, -2, W + 4, H + 4);
+              S2.globalAlpha = outA;
+              S2.drawImage(src, 0, 0, W, H);
+              S2.globalAlpha = 1;
+            }
           }
         }
 
@@ -1821,6 +1895,54 @@ window.__ModuleLoader__.load({
           toolNames = [];
           dirty = true;
         }
+        /* ---------- v0.4.0: layer separation (text and field on two planes) ----------
+           The complaint this answers: "text and animation sit in the same layer".
+           Three independent levers, every one of them switchable from the console:
+             ringData     - how visible the ring's own data panels (baked textures) are
+             fieldBlur    - host-applied CSS blur on the whole field (depth of field)
+             guard*       - a soft clearing punched out of the light field exactly where
+                            the reading text is, so the field reads as BEHIND the text
+           Guard works on the composed frame (frameC) right before the single blit, so
+           it dims only the light, never the UI text underneath (the canvas is composited
+           over the app with mix-blend-mode; removing canvas alpha lets the text through). */
+        function ringDataK() { return clamp(num(C.ringData, 1), 0, 1); }
+        /** motion quiet: 1 = full speed, 0.4 = everything drifts at 40% (still visible, far calmer) */
+        function motionK() { return 1 - 0.6 * clamp(num(C.motionQuiet, 0), 0, 1); }
+        function applyTextGuard(g) {
+          if (!g || !ready) return;
+          if (num(C.guardOn, 0) < 0.5) { guardHit = null; return; }
+          const st = clamp(num(C.guardStrength, 0.4), 0, 1);
+          if (st <= 0.004) { guardHit = null; return; }
+          const rad = Math.max(0, num(C.guardRadius, 0.9)) * R;
+          const colW = Math.max(0, num(C.guardColW, 0));
+          if (rad <= 6 && colW <= 6) { guardHit = null; return; }
+          guardHit = { rad, colW, st };
+          g.save();
+          g.setTransform(DPR, 0, 0, DPR, 0, 0);
+          g.globalCompositeOperation = 'destination-out';
+          if (rad > 6) {
+            const rg = g.createRadialGradient(cx, cy, rad * 0.12, cx, cy, rad);
+            rg.addColorStop(0, 'rgba(0,0,0,' + st + ')');
+            rg.addColorStop(0.55, 'rgba(0,0,0,' + (st * 0.82) + ')');
+            rg.addColorStop(1, 'rgba(0,0,0,0)');
+            g.fillStyle = rg;
+            g.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
+          }
+          if (colW > 6) {
+            const half = colW / 2;
+            const soft = clamp(half * 0.35, 16, 140);
+            const x0 = cx - half - soft, x1 = cx + half + soft;
+            const lg = g.createLinearGradient(x0, 0, x1, 0);
+            const e = soft / (x1 - x0);
+            lg.addColorStop(0, 'rgba(0,0,0,0)');
+            lg.addColorStop(e, 'rgba(0,0,0,' + st + ')');
+            lg.addColorStop(1 - e, 'rgba(0,0,0,' + st + ')');
+            lg.addColorStop(1, 'rgba(0,0,0,0)');
+            g.fillStyle = lg;
+            g.fillRect(x0, 0, x1 - x0, H);
+          }
+          g.restore();
+        }
         function countParticles() {
           return runners.length + comets.length + pulses.length + hazes.length + flares.length + flyers.length + bokehs.length;
         }
@@ -1925,6 +2047,7 @@ window.__ModuleLoader__.load({
             target: !present ? clamp(num(C.voidLevel, 0), 0, 1)
               : (sessRunning ? clamp(num(C.runLevel, 1), 0.2, 2) : clamp(num(C.idleMotion, 0), 0, 1)),
             build: bld, activity: act, spinning: !!spin, loopRunning: running,
+            guard: guardHit,
             cam: { x: cam.x, y: cam.y, z: cam.z },
           };
         }
@@ -3037,13 +3160,17 @@ window.__ModuleLoader__.load({
       const COMMIT_MS = 120;       // slider idle delay before we push to params
       const FLASH_MS = 2000;       // "copied" note lifetime
       const TOKEN_TAIL = 140;      // chars of token stream shown
-      const PRESET_ORDER = ['A', 'B', 'MINE'];
+      const PRESET_ORDER = ['A', 'B', 'MINE', 'QUIET', 'EDGE', 'READ'];
       const FONT_STACK = '"JetBrains Mono",Consolas,ui-monospace,monospace';
 
       /** Plugin-owned defaults, mirroring mount.js `baseParams()`. */
       const PLUGIN_DEFAULTS = {
         opacity: 0.55, blend: 0, idleMotion: 0.15, activityGain: 1,
         centerX: 0, centerY: 0, scale: 1, hudOn: 1, feedOn: 1,
+        // v0.4.0 layer separation (mirrors engine BASE)
+        fieldBlur: 0, ringData: 1, guardOn: 1, guardStrength: 0.4, guardRadius: 0.9, guardColW: 0, plateAlpha: 0.72,
+        fieldBright: 1, guardBlur: 0, motionQuiet: 0, readFade: 0,
+        tintAmount: 0, tintHue: 210, tintSat: 1.6,
       };
 
       /* ------------------------------------------------------------------ *
@@ -3219,7 +3346,7 @@ window.__ModuleLoader__.load({
       max-width:calc(100vw - 320px);overflow:hidden;padding:4px 9px;border-radius:8px;box-sizing:border-box;
       pointer-events:none;contain:layout style;
       font:11px/1.3 ${FONT_STACK};letter-spacing:.06em;color:${T_LABEL_2};
-      background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) 72%,transparent);
+      background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) var(--hfx-plate,72%),transparent);
       border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 70%,transparent);
       backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
     .hfx-stats .hfx-kpi{display:flex;align-items:baseline;gap:5px;min-width:56px;overflow:hidden}
@@ -3296,7 +3423,7 @@ window.__ModuleLoader__.load({
       display:flex;flex-direction:column;gap:6px;contain:layout style;
       font:11px/1.45 ${FONT_STACK};letter-spacing:.06em;color:${T_LABEL_2}}
     .hfx-pane{box-sizing:border-box;padding:5px 8px 6px;border-radius:8px;
-      background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) 72%,transparent);
+      background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) var(--hfx-plate,72%),transparent);
       border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 62%,transparent);
       backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
     .hfx-pane .hfx-hd{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:${T_CAPTION};
@@ -3362,7 +3489,7 @@ window.__ModuleLoader__.load({
     .hfx-tools{position:absolute;right:var(--hfx-hud-inset,12px);bottom:var(--hfx-hud-inset,12px);width:252px;pointer-events:none;box-sizing:border-box;
       padding:5px 8px 6px;border-radius:8px;contain:layout style;
       font:11px/1.45 ${FONT_STACK};letter-spacing:.06em;color:${T_LABEL_2};
-      background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) 72%,transparent);
+      background:color-mix(in srgb,var(--dsw-alias-bg-base,#0b0d10) var(--hfx-plate,72%),transparent);
       border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2,#2a2f3a) 62%,transparent);
       backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
     .hfx-tools .hfx-hd{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:${T_CAPTION};
@@ -4141,6 +4268,7 @@ window.__ModuleLoader__.load({
 
         const hostRef = React.useRef(null);
         const canvasRef = React.useRef(null);
+        const canvas2Ref = React.useRef(null);
         const engineRef = React.useRef(null);
         const liveRef = React.useRef(null);
         const sessionRef = React.useRef(sessionId);
@@ -4153,6 +4281,7 @@ window.__ModuleLoader__.load({
         const [open, setOpen] = React.useState(false);
         const [stats, setStats] = React.useState(null);
         const [liveTick, setLiveTick] = React.useState(0);
+        const [reading, setReading] = React.useState(false);
 
         const patchParams = React.useCallback((partial) => { HalofluxState.set(partial); }, []);
 
@@ -4227,6 +4356,7 @@ window.__ModuleLoader__.load({
           if (!canvas || !liveRef.current) return undefined;
           const engine = HalofluxEngine.create({
             canvas,
+            canvas2: canvas2Ref.current,
             live: liveRef.current,
             params,
             onStats: setStats,
@@ -4307,9 +4437,85 @@ window.__ModuleLoader__.load({
           return () => window.removeEventListener('keydown', onKey);
         }, [params.hudOn, patchParams]);
 
+        /* readFade: interact → the field steps back, 2.5s idle → it comes back.
+           Only wheel/scroll/keys, so passive viewing keeps the full look. */
+        React.useEffect(() => {
+          if (!(Number(params.readFade) >= 0.5)) { setReading(false); return undefined; }
+          let timer = 0;
+          const bump = () => {
+            setReading(true);
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => { timer = 0; setReading(false); }, 2500);
+          };
+          const passive = { passive: true };
+          const capture = { passive: true, capture: true };
+          window.addEventListener('wheel', bump, passive);
+          window.addEventListener('scroll', bump, capture);
+          window.addEventListener('keydown', bump, passive);
+          window.addEventListener('mousedown', bump, passive);
+          return () => {
+            if (timer) clearTimeout(timer);
+            window.removeEventListener('wheel', bump, passive);
+            window.removeEventListener('scroll', bump, capture);
+            window.removeEventListener('keydown', bump, passive);
+            window.removeEventListener('mousedown', bump, passive);
+          };
+        }, [params.readFade]);
+
         const blendMode = ['screen', 'lighten', 'normal'][params.blend | 0] || 'screen';
-        const opacity = Math.max(0, Math.min(1, params.opacity));
+        // readFade: while the user scrolls/types the field recedes, then returns on idle
+        const rawFade = Number(params.readFade);
+        const readOn = isFinite(rawFade) && rawFade >= 0.5;
+        const fadeK = readOn && reading ? 0.55 : 1;
+        const opacity = Math.max(0, Math.min(1, Number(params.opacity) * fadeK));
+        // layer separation: the field can be pushed out of focus (a depth cue that puts it
+        // behind the text) and the HUD panes can be more or less opaque over the light
+        const rawBlur = Number(params.fieldBlur);
+        const blurPx = Math.max(0, Math.min(3, isFinite(rawBlur) ? rawBlur : 0));
+        const rawPlate = Number(params.plateAlpha);
+        const platePct = Math.round(Math.max(0, Math.min(1, isFinite(rawPlate) ? rawPlate : 0.72)) * 100);
+        // theme colour: sepia() flattens the light to one hue, hue-rotate() picks the hue,
+        // saturate() decides how strong it reads. Applied to the canvas only, so the UI
+        // text and every HUD element keep their own colours.
+        const rawTint = Number(params.tintAmount);
+        const tintAmt = Math.max(0, Math.min(1, isFinite(rawTint) ? rawTint : 0));
+        const rawHue = Number(params.tintHue);
+        const tintHue = ((isFinite(rawHue) ? rawHue : 210) % 360 + 360) % 360;
+        const rawSat = Number(params.tintSat);
+        const tintSat = Math.max(0.2, Math.min(3, isFinite(rawSat) ? rawSat : 1.6));
+        const filters = [];
+        const rawBright = Number(params.fieldBright);
+        const brightK = Math.max(0.3, Math.min(1.3, isFinite(rawBright) ? rawBright : 1));
+        if (Math.abs(brightK - 1) > 0.005) filters.push('brightness(' + brightK.toFixed(2) + ')');
+        if (blurPx > 0.05) filters.push('blur(' + blurPx.toFixed(2) + 'px)');
+        if (tintAmt > 0.01) {
+          filters.push('sepia(' + tintAmt.toFixed(2) + ')',
+            'hue-rotate(' + tintHue.toFixed(0) + 'deg)',
+            'saturate(' + tintSat.toFixed(2) + ')');
+        }
         const hudVisible = params.hudOn >= 0.5 && params.opacity > 0.02;
+
+        // low-pass reading column: the SAME frame is mirrored onto a second canvas, blurred and
+        // masked to the column, while the main canvas gets a matching hole. Sharp outside,
+        // defocused inside — depth instead of a punched-out hole, and no brightness loss.
+        const rawCol = Number(params.guardColW);
+        const colW = Math.max(0, Math.min(1600, isFinite(rawCol) ? rawCol : 0));
+        const rawGuardBlur = Number(params.guardBlur);
+        const guardBlur = Math.max(0, Math.min(24, isFinite(rawGuardBlur) ? rawGuardBlur : 0));
+        const lowOn = guardBlur > 0.3 && colW > 80;
+        const feather = Math.min(180, Math.max(24, colW * 0.22));
+        const xA = 'calc(50% - ' + (colW / 2 + feather) + 'px)';
+        const xB = 'calc(50% - ' + colW / 2 + 'px)';
+        const xC = 'calc(50% + ' + colW / 2 + 'px)';
+        const xD = 'calc(50% + ' + (colW / 2 + feather) + 'px)';
+        const maskBand = lowOn
+          ? 'linear-gradient(to right,transparent 0,transparent ' + xA + ',#000 ' + xB + ',#000 ' + xC + ',transparent ' + xD + ',transparent 100%)'
+          : undefined;
+        const maskHole = lowOn
+          ? 'linear-gradient(to right,#000 0,#000 ' + xA + ',transparent ' + xB + ',transparent ' + xC + ',#000 ' + xD + ',#000 100%)'
+          : undefined;
+        const lowFilter = (guardBlur > 0.3 ? 'blur(' + guardBlur.toFixed(1) + 'px) ' : '')
+          + (filters.length ? filters.join(' ') : '');
 
         const live = liveRef.current;
         /** stable defaults object: the slider list memoises on reference identity */
@@ -4330,12 +4536,33 @@ window.__ModuleLoader__.load({
           resetDefault: () => HalofluxState.resetDefault(),
         };
 
-        return h('div', { className: 'hfx-root', ref: hostRef, 'aria-hidden': open ? undefined : true, style: { pointerEvents: 'none' } },
+        return h('div', { className: 'hfx-root', ref: hostRef, 'aria-hidden': open ? undefined : true, style: { pointerEvents: 'none', '--hfx-plate': platePct + '%' } },
           h('style', null, BASE_CSS),
           h('canvas', {
             ref: canvasRef,
             className: 'hfx-canvas',
-            style: { opacity, mixBlendMode: blendMode === 'normal' ? undefined : blendMode },
+            style: {
+              opacity,
+              transition: 'opacity .35s ease',
+              mixBlendMode: blendMode === 'normal' ? undefined : blendMode,
+              filter: filters.length ? filters.join(' ') : undefined,
+              maskImage: maskHole,
+              WebkitMaskImage: maskHole,
+            },
+          }),
+          h('canvas', {
+            ref: canvas2Ref,
+            className: 'hfx-canvas',
+            'aria-hidden': true,
+            style: {
+              opacity,
+              transition: 'opacity .35s ease',
+              display: lowOn ? undefined : 'none',
+              mixBlendMode: blendMode === 'normal' ? undefined : blendMode,
+              filter: lowFilter || undefined,
+              maskImage: maskBand,
+              WebkitMaskImage: maskBand,
+            },
           }),
           hudVisible && HalofluxHud && live ? h(HalofluxHud.Stats, { ...hudProps, liveTick }) : null,
           hudVisible && HalofluxHud && live ? h(HalofluxHud.Feed, { ...hudProps, liveTick }) : null,

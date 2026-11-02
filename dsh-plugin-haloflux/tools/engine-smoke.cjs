@@ -153,11 +153,19 @@ function boot(opts) {
 
 /* ================= 1. metadata ================= */
 ok(!!E && typeof E.create === 'function', 'HalofluxEngine.create is a function');
-ok(E.PARAMS.length === 79, 'PARAMS count = 79 (got ' + E.PARAMS.length + ')');
+ok(E.PARAMS.length === 93, 'PARAMS count = 93 (got ' + E.PARAMS.length + ')');
 const keys = E.PARAMS.map(p => p[0]);
 ok(new Set(keys).size === keys.length, 'PARAMS keys are unique');
 const groups = [...new Set(E.PARAMS.map(p => p[5]))];
-ok(groups.join(',') === '全局,圆环,圈内,环外,空间层次,插件', 'groups + order = ' + groups.join(' | '));
+ok(groups.join(',') === '全局,圆环,圈内,环外,空间层次,插件,分层,配色', 'groups + order = ' + groups.join(' | '));
+const layer = E.PARAMS.filter(p => p[5] === '分层').map(p => p[0]);
+ok(layer.join(',') === 'fieldBlur,ringData,guardOn,guardStrength,guardRadius,guardColW,plateAlpha,fieldBright,guardBlur,motionQuiet,readFade',
+  'layer-separation group = ' + layer.join(','));
+ok(E.BASE.guardOn === 1 && E.BASE.fieldBlur === 0 && E.BASE.guardColW === 0,
+  'layer separation defaults (guard on, blur off, column guard off)');
+const tint = E.PARAMS.filter(p => p[5] === '配色').map(p => p[0]);
+ok(tint.join(',') === 'tintAmount,tintHue,tintSat', 'theme-colour group = ' + tint.join(','));
+ok(E.BASE.tintAmount === 0 && E.BASE.tintHue === 210, 'theme colour is off by default (amount 0)');
 const plug = E.PARAMS.filter(p => p[5] === '插件').map(p => p[0]);
 ok(plug.join(',') === 'opacity,blend,idleMotion,activityGain,centerX,centerY,scale,hudOn,feedOn,dataMode,backdrop,'
   + 'runLevel,voidLevel,attackMs,releaseMs,revolveOnSwitch,revolveMs,easeCurve,'
@@ -168,7 +176,7 @@ const flag = k => row(k)[6];
 ok(flag('ringWidth') === 'resize' && flag('rimWidth') === 'slots' && flag('webBright') === 'web'
   && flag('webBlur') === 'web' && flag('flyerCount') === 'flyers', 'rebuild flags preserved');
 ok(E.PARAMS.filter(p => p[6]).length === 5, 'exactly 5 rebuild params');
-ok(Object.keys(E.BASE).length === 79 && keys.every(k => k in E.BASE), 'BASE covers all 79 keys');
+ok(Object.keys(E.BASE).length === 93 && keys.every(k => k in E.BASE), 'BASE covers all 93 keys');
 ok(row('idleMotion')[1] === '静默态强度', 'idleMotion label = 静默态强度');
 ok(E.BASE.idleMotion === 0.06 && E.PRESETS.MINE.idleMotion === 0.06, 'idleMotion default = 0.06');
 ok(E.BASE.camera === 1, 'BASE.camera untouched (still 1; mount turns it off)');
@@ -195,11 +203,11 @@ ok(!!eng, 'create({canvas, live, params}) returns an engine');
 ok(opCount === ctxOpsBeforeCreate, 'create() performs no canvas work (waits for start/resize)');
 ok(['setParams', 'getParams', 'resize', 'start', 'stop', 'dispose', 'revolve', 'debug']
   .every(k => typeof eng[k] === 'function'), 'api includes revolve() and debug()');
-ok(Object.keys(eng.getParams()).length === 79, 'getParams() returns the 79-key copy');
+ok(Object.keys(eng.getParams()).length === 93, 'getParams() returns the 93-key copy');
 const dbgKeys = ['ringRot', 'spinOffset', 'env', 'out', 'mo', 'present', 'running'];
 const d0 = eng.debug();
 ok(dbgKeys.every(k => k in d0), 'debug() exposes ' + dbgKeys.join('/'));
-ok(typeof d0.params === 'object' && Object.keys(d0.params).length === 79, 'debug().params is the 79-key copy');
+ok(typeof d0.params === 'object' && Object.keys(d0.params).length === 93, 'debug().params is the 93-key copy');
 ok(d0.present === true && d0.running === false && d0.env === 0 && d0.out === 0 && d0.mo === 0,
   'debug() initial: present (field missing ⇒ true), not running, level 0');
 
@@ -557,6 +565,36 @@ ok(threw4, 'create() without a canvas throws a clear error');
 
   b.tick(90, 1000 / 60);
   ok(b.eng.debug().switchT === -1, 'switch window closes after its duration');
+  b.kill();
+})();
+
+/* ================= 19. layer separation: text guard + ring data ================= */
+(function () {
+  const lv = {
+    activity: 0.8, sessionPresent: true, running: true, tools: [], pullTokens: () => [],
+  };
+  const b = boot({ live: lv, params: { attackMs: 100, guardOn: 1, guardStrength: 0.5, guardRadius: 0.9 } });
+  b.tick(30, 1000 / 60);
+  const g1 = b.eng.debug().guard;
+  ok(!!g1 && Math.abs(g1.st - 0.5) < 1e-9 && g1.rad > 6,
+    'guardOn=1 punches a clearing (st=' + (g1 && g1.st) + ', rad=' + (g1 && Math.round(g1.rad)) + ')');
+
+  b.eng.setParams({ guardOn: 0 });
+  b.tick(2, 1000 / 60);
+  ok(b.eng.debug().guard === null, 'guardOn=0 disables the clearing');
+
+  b.eng.setParams({ guardOn: 1, guardRadius: 0, guardColW: 640 });
+  b.tick(2, 1000 / 60);
+  const g2 = b.eng.debug().guard;
+  ok(!!g2 && g2.rad === 0 && g2.colW === 640, 'column guard alone applies (colW=' + (g2 && g2.colW) + ')');
+
+  b.eng.setParams({ guardStrength: 0 });
+  b.tick(2, 1000 / 60);
+  ok(b.eng.debug().guard === null, 'guardStrength=0 disables the clearing');
+
+  b.eng.setParams({ guardStrength: 0.4, guardRadius: 0.9, ringData: 0 });
+  b.tick(4, 1000 / 60);
+  ok(true, 'ringData=0 (bare light band) renders without throwing');
   b.kill();
 })();
 

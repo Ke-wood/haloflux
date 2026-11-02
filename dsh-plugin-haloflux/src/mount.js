@@ -180,6 +180,7 @@ const HalofluxPlugin = (() => {
 
     const hostRef = React.useRef(null);
     const canvasRef = React.useRef(null);
+    const canvas2Ref = React.useRef(null);
     const engineRef = React.useRef(null);
     const liveRef = React.useRef(null);
     const sessionRef = React.useRef(sessionId);
@@ -192,6 +193,7 @@ const HalofluxPlugin = (() => {
     const [open, setOpen] = React.useState(false);
     const [stats, setStats] = React.useState(null);
     const [liveTick, setLiveTick] = React.useState(0);
+    const [reading, setReading] = React.useState(false);
 
     const patchParams = React.useCallback((partial) => { HalofluxState.set(partial); }, []);
 
@@ -266,6 +268,7 @@ const HalofluxPlugin = (() => {
       if (!canvas || !liveRef.current) return undefined;
       const engine = HalofluxEngine.create({
         canvas,
+        canvas2: canvas2Ref.current,
         live: liveRef.current,
         params,
         onStats: setStats,
@@ -346,9 +349,85 @@ const HalofluxPlugin = (() => {
       return () => window.removeEventListener('keydown', onKey);
     }, [params.hudOn, patchParams]);
 
+    /* readFade: interact → the field steps back, 2.5s idle → it comes back.
+       Only wheel/scroll/keys, so passive viewing keeps the full look. */
+    React.useEffect(() => {
+      if (!(Number(params.readFade) >= 0.5)) { setReading(false); return undefined; }
+      let timer = 0;
+      const bump = () => {
+        setReading(true);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => { timer = 0; setReading(false); }, 2500);
+      };
+      const passive = { passive: true };
+      const capture = { passive: true, capture: true };
+      window.addEventListener('wheel', bump, passive);
+      window.addEventListener('scroll', bump, capture);
+      window.addEventListener('keydown', bump, passive);
+      window.addEventListener('mousedown', bump, passive);
+      return () => {
+        if (timer) clearTimeout(timer);
+        window.removeEventListener('wheel', bump, passive);
+        window.removeEventListener('scroll', bump, capture);
+        window.removeEventListener('keydown', bump, passive);
+        window.removeEventListener('mousedown', bump, passive);
+      };
+    }, [params.readFade]);
+
     const blendMode = ['screen', 'lighten', 'normal'][params.blend | 0] || 'screen';
-    const opacity = Math.max(0, Math.min(1, params.opacity));
+    // readFade: while the user scrolls/types the field recedes, then returns on idle
+    const rawFade = Number(params.readFade);
+    const readOn = isFinite(rawFade) && rawFade >= 0.5;
+    const fadeK = readOn && reading ? 0.55 : 1;
+    const opacity = Math.max(0, Math.min(1, Number(params.opacity) * fadeK));
+    // layer separation: the field can be pushed out of focus (a depth cue that puts it
+    // behind the text) and the HUD panes can be more or less opaque over the light
+    const rawBlur = Number(params.fieldBlur);
+    const blurPx = Math.max(0, Math.min(3, isFinite(rawBlur) ? rawBlur : 0));
+    const rawPlate = Number(params.plateAlpha);
+    const platePct = Math.round(Math.max(0, Math.min(1, isFinite(rawPlate) ? rawPlate : 0.72)) * 100);
+    // theme colour: sepia() flattens the light to one hue, hue-rotate() picks the hue,
+    // saturate() decides how strong it reads. Applied to the canvas only, so the UI
+    // text and every HUD element keep their own colours.
+    const rawTint = Number(params.tintAmount);
+    const tintAmt = Math.max(0, Math.min(1, isFinite(rawTint) ? rawTint : 0));
+    const rawHue = Number(params.tintHue);
+    const tintHue = ((isFinite(rawHue) ? rawHue : 210) % 360 + 360) % 360;
+    const rawSat = Number(params.tintSat);
+    const tintSat = Math.max(0.2, Math.min(3, isFinite(rawSat) ? rawSat : 1.6));
+    const filters = [];
+    const rawBright = Number(params.fieldBright);
+    const brightK = Math.max(0.3, Math.min(1.3, isFinite(rawBright) ? rawBright : 1));
+    if (Math.abs(brightK - 1) > 0.005) filters.push('brightness(' + brightK.toFixed(2) + ')');
+    if (blurPx > 0.05) filters.push('blur(' + blurPx.toFixed(2) + 'px)');
+    if (tintAmt > 0.01) {
+      filters.push('sepia(' + tintAmt.toFixed(2) + ')',
+        'hue-rotate(' + tintHue.toFixed(0) + 'deg)',
+        'saturate(' + tintSat.toFixed(2) + ')');
+    }
     const hudVisible = params.hudOn >= 0.5 && params.opacity > 0.02;
+
+    // low-pass reading column: the SAME frame is mirrored onto a second canvas, blurred and
+    // masked to the column, while the main canvas gets a matching hole. Sharp outside,
+    // defocused inside — depth instead of a punched-out hole, and no brightness loss.
+    const rawCol = Number(params.guardColW);
+    const colW = Math.max(0, Math.min(1600, isFinite(rawCol) ? rawCol : 0));
+    const rawGuardBlur = Number(params.guardBlur);
+    const guardBlur = Math.max(0, Math.min(24, isFinite(rawGuardBlur) ? rawGuardBlur : 0));
+    const lowOn = guardBlur > 0.3 && colW > 80;
+    const feather = Math.min(180, Math.max(24, colW * 0.22));
+    const xA = 'calc(50% - ' + (colW / 2 + feather) + 'px)';
+    const xB = 'calc(50% - ' + colW / 2 + 'px)';
+    const xC = 'calc(50% + ' + colW / 2 + 'px)';
+    const xD = 'calc(50% + ' + (colW / 2 + feather) + 'px)';
+    const maskBand = lowOn
+      ? 'linear-gradient(to right,transparent 0,transparent ' + xA + ',#000 ' + xB + ',#000 ' + xC + ',transparent ' + xD + ',transparent 100%)'
+      : undefined;
+    const maskHole = lowOn
+      ? 'linear-gradient(to right,#000 0,#000 ' + xA + ',transparent ' + xB + ',transparent ' + xC + ',#000 ' + xD + ',#000 100%)'
+      : undefined;
+    const lowFilter = (guardBlur > 0.3 ? 'blur(' + guardBlur.toFixed(1) + 'px) ' : '')
+      + (filters.length ? filters.join(' ') : '');
 
     const live = liveRef.current;
     /** stable defaults object: the slider list memoises on reference identity */
@@ -369,12 +448,33 @@ const HalofluxPlugin = (() => {
       resetDefault: () => HalofluxState.resetDefault(),
     };
 
-    return h('div', { className: 'hfx-root', ref: hostRef, 'aria-hidden': open ? undefined : true, style: { pointerEvents: 'none' } },
+    return h('div', { className: 'hfx-root', ref: hostRef, 'aria-hidden': open ? undefined : true, style: { pointerEvents: 'none', '--hfx-plate': platePct + '%' } },
       h('style', null, BASE_CSS),
       h('canvas', {
         ref: canvasRef,
         className: 'hfx-canvas',
-        style: { opacity, mixBlendMode: blendMode === 'normal' ? undefined : blendMode },
+        style: {
+          opacity,
+          transition: 'opacity .35s ease',
+          mixBlendMode: blendMode === 'normal' ? undefined : blendMode,
+          filter: filters.length ? filters.join(' ') : undefined,
+          maskImage: maskHole,
+          WebkitMaskImage: maskHole,
+        },
+      }),
+      h('canvas', {
+        ref: canvas2Ref,
+        className: 'hfx-canvas',
+        'aria-hidden': true,
+        style: {
+          opacity,
+          transition: 'opacity .35s ease',
+          display: lowOn ? undefined : 'none',
+          mixBlendMode: blendMode === 'normal' ? undefined : blendMode,
+          filter: lowFilter || undefined,
+          maskImage: maskBand,
+          WebkitMaskImage: maskBand,
+        },
       }),
       hudVisible && HalofluxHud && live ? h(HalofluxHud.Stats, { ...hudProps, liveTick }) : null,
       hudVisible && HalofluxHud && live ? h(HalofluxHud.Feed, { ...hudProps, liveTick }) : null,

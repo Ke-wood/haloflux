@@ -145,6 +145,22 @@ const HalofluxEngine = (() => {
     ['switchFlash', '切换：亮度脉冲 强度', 0, 1, 0.05, '插件'],
     ['switchHue', '切换：色相扫过 强度', 0, 1, 0.05, '插件'],
     ['switchCam', '切换：镜头轻推 (0关 1开)', 0, 1, 1, '插件'],
+    /* ---- round 5: layer separation (text / field on different planes) ---- */
+    ['fieldBlur', '背景层虚化 景深 (px)', 0, 3, 0.1, '分层'],
+    ['ringData', '环上数据面板亮度 (0=纯光带)', 0, 1, 0.05, '分层'],
+    ['guardOn', '文字静区 总开关 (0关 1开)', 0, 1, 1, '分层'],
+    ['guardStrength', '文字静区 压制强度', 0, 1, 0.05, '分层'],
+    ['guardRadius', '中心静区半径 (×环半径)', 0, 1.4, 0.05, '分层'],
+    ['guardColW', '正文列静区宽度 px (0=关)', 0, 1600, 10, '分层'],
+    ['plateAlpha', 'HUD 底衬不透明度', 0, 1, 0.05, '分层'],
+    ['fieldBright', '背景层亮度 (整体压暗)', 0.3, 1.3, 0.05, '分层'],
+    ['guardBlur', '正文列低通虚化 (px, 0=关)', 0, 24, 0.5, '分层'],
+    ['motionQuiet', '静读：整体减弱运动', 0, 1, 0.1, '分层'],
+    ['readFade', '阅读时自动降亮 (0关 1开)', 0, 1, 1, '分层'],
+    /* ---- round 6: theme colour (applied by the host as a CSS filter chain) ---- */
+    ['tintAmount', '主题染色 强度 (0=原色)', 0, 1, 0.05, '配色'],
+    ['tintHue', '主题色相 0-360', 0, 360, 5, '配色'],
+    ['tintSat', '主题饱和 增强', 0.2, 3, 0.05, '配色'],
   ];
 
   const BASE = {
@@ -162,6 +178,10 @@ const HalofluxEngine = (() => {
     runLevel: 1, voidLevel: 0, attackMs: 800, releaseMs: 2600,
     revolveOnSwitch: 1, revolveMs: 1500, easeCurve: 1,
     revolveOuter: 1, switchReveal: 1, switchFlash: 0.6, switchHue: 0, switchCam: 1,
+    /* layer separation: off by default for blur, guard on at a light strength */
+    fieldBlur: 0, ringData: 1, guardOn: 1, guardStrength: 0.4, guardRadius: 0.9, guardColW: 0, plateAlpha: 0.72,
+    fieldBright: 1, guardBlur: 0, motionQuiet: 0, readFade: 0,
+    tintAmount: 0, tintHue: 210, tintSat: 1.6,
   };
 
   // 作者定稿默认（lab.html: BAKED_MINE, 2026-10-21）
@@ -185,6 +205,31 @@ const HalofluxEngine = (() => {
     B: { ...BASE },
   };
   PRESETS.MINE = { ...BASE, ...BAKED_MINE };
+  /** QUIET — 阅读优先：整层压暗 + 轻微失焦 + 环上数据面板减半，正文区留一层柔和的低亮度过渡。
+      一键回到“光在背景里”的状态，适合长时间读长文；动效和切换行为保持不变。 */
+  PRESETS.QUIET = {
+    ...BASE, ...BAKED_MINE,
+    opacity: 0.3, fieldBright: 0.82, fieldBlur: 1.1, ringData: 0.5,
+    guardOn: 1, guardStrength: 0.55, guardRadius: 0.95, guardColW: 0, plateAlpha: 0.88,
+    bokeh: 0, bokehBright: 0, runnerCount: 240, runnerBright: 0.35, cometBright: 0.7,
+    hazeBright: 0.8, flyerBright: 1.6, beamBright: 1.1, depthDim: 0.6,
+  };
+  /** EDGE — 构图解：把环收小、略上移，让正文整块落在环心暗区里。
+      不靠压暗/挖洞，靠“物理上不重叠”分出两层；想再收就继续降 scale。 */
+  PRESETS.EDGE = {
+    ...BASE, ...BAKED_MINE,
+    scale: 0.44, centerY: 0.1, ringWidth: 1.0, opacity: 0.5,
+    guardOn: 0, fieldBlur: 0, ringData: 1,
+  };
+  /** READ — 阅读组合：构图收环 + 正文列低通（模糊替代压暗）+ 减弱运动 + 滚动时自动降亮 */
+  PRESETS.READ = {
+    ...BASE, ...BAKED_MINE,
+    scale: 0.46, centerY: 0.08, ringWidth: 1.05, opacity: 0.42,
+    fieldBright: 0.9, fieldBlur: 0.6, ringData: 0.6,
+    guardOn: 1, guardStrength: 0.3, guardRadius: 0.95, guardColW: 780, guardBlur: 9,
+    motionQuiet: 1, plateAlpha: 0.9, readFade: 1,
+    bokeh: 0, bokehBright: 0, runnerCount: 300, runnerBright: 0.4, cometBright: 0.8, hazeBright: 0.9,
+  };
 
   const PMAP = {};
   for (const p of PARAMS) PMAP[p[0]] = { label: p[1], min: p[2], max: p[3], step: p[4], group: p[5], rebuild: p[6] };
@@ -236,6 +281,8 @@ const HalofluxEngine = (() => {
     if (!canvas || typeof canvas.getContext !== 'function') {
       throw new Error('HalofluxEngine.create: a canvas element is required');
     }
+    /** optional second surface for the masked low-pass copy (see guardBlur) */
+    const canvas2 = conf.canvas2 && typeof conf.canvas2.getContext === 'function' ? conf.canvas2 : null;
     const live = conf.live || null;
     const onStats = typeof conf.onStats === 'function' ? conf.onStats : null;
 
@@ -258,10 +305,12 @@ const HalofluxEngine = (() => {
     const backdrop = () => clamp(num(C.backdrop, 0), 0, 1);
 
     /* ---------- state ---------- */
-    let S = null, S_MAIN = null;
+    let S = null, S_MAIN = null, S2 = null;
     let DPR = 1, HAS_FILTER = false;
     let W = 0, H = 0, cx = 0, cy = 0, R = 0, RO = 0, RMAX = 0, thV = 0, thS = 0;
     let webBase = null, webLayers = [], trailC = null, glowC = null, laneC = null, farC = null, frameC = null;
+    /** last applied text-guard clearing (diagnostics only; null when the guard is off) */
+    let guardHit = null;
     let bokehSpr = null, scanPatDark = null, scanPatLight = null, scanGrad = null, webDisc = null;
     let curves = [], runners = [], comets = [], pulses = [], hazes = [], flares = [], flyers = [], flyBands = [];
     let strandLayers = [], wedges = [], slots = [], shots = [], bokehs = [];
@@ -423,6 +472,13 @@ const HalofluxEngine = (() => {
       if (!S) { ready = false; return; }
       S.setTransform(DPR, 0, 0, DPR, 0, 0);
       S_MAIN = S;
+      // optional second surface: the host masks a blurred copy of the same frame over the
+      // reading column, so the text area gets a low-pass version of the field instead of
+      // a punched-out hole (the "guardBlur" switch)
+      if (canvas2) {
+        canvas2.width = canvas.width; canvas2.height = canvas.height;
+        S2 = canvas2.getContext('2d');
+      }
       HAS_FILTER = 'filter' in S;
 
       // composition centre: original W*0.07 / H*0.5, now offset by centerX/centerY (-1..1 = half screen)
@@ -896,8 +952,9 @@ const HalofluxEngine = (() => {
       if (!bokehSpr) return;
       const k = 1 + 0.6 * C.parallax, z = 1 + (cam.z - 1) * k, ox = (cam.x - W / 2) * k, oy = (cam.y - H / 2) * k;
       S.setTransform(DPR, 0, 0, DPR, 0, 0); S.globalCompositeOperation = 'lighter';
+      const mk = motionK();
       for (const b of bokehs) {
-        b.x += b.vx * dtM; b.y += b.vy * dtM;
+        b.x += b.vx * dtM * mk; b.y += b.vy * dtM * mk;
         if (b.x < -0.15 * W) b.x += 1.3 * W;
         if (b.x > 1.15 * W) b.x -= 1.3 * W;
         if (b.y < -0.15 * H) b.y += 1.3 * H;
@@ -1084,8 +1141,7 @@ const HalofluxEngine = (() => {
       const band = RO - R, h = s.hpx;
       const cw = Math.max(1, Math.ceil(band * RING_SC)), chh = Math.max(1, Math.ceil((h + 2) * RING_SC));
       let c = s.c;
-      if (!c || c.width !== cw || c.height !== chh) {
-        c = newCanvas(cw, chh);
+      if (!c || c.width !== cw || c.height !== chh) {        c = newCanvas(cw, chh);
         if (!c) return;
         c.width = cw; c.height = chh;
       }
@@ -1165,12 +1221,16 @@ const HalofluxEngine = (() => {
         if (!s.c) { renderSlot(s); }
         else if (regen > 0 && actOn && rnd() < 0.02) { renderSlot(s); regen--; }
         if (!s.c) continue;
+        // ringData: the baked data panels (text + bars) can be dialled down to a bare
+        // light band, so the ring stops competing with the reading text
+        const rd = ringDataK();
+        if (rd <= 0.004) continue;
         S.save(); S.rotate(A);
         const hh = s.hpx + 2;
-        if (show < 1) S.globalAlpha = show;
+        if (show * rd < 1) S.globalAlpha = show * rd;
         S.drawImage(s.c, R, -hh / 2, band, hh);
         if (s.flash > 0.02) {
-          S.globalCompositeOperation = 'lighter'; S.globalAlpha = s.flash * show;
+          S.globalCompositeOperation = 'lighter'; S.globalAlpha = s.flash * show * rd;
           S.drawImage(s.c, R, -hh / 2, band, hh);
           S.globalCompositeOperation = 'source-over';
         }
@@ -1556,7 +1616,7 @@ const HalofluxEngine = (() => {
         tx.save(); tx.translate(R + 2, R + 2); tx.lineCap = 'round';
         for (let i = runners.length - 1; i >= 0; i--) {
           const r = runners[i];
-          r.t += dtM * C.runnerSpeed * (r.mode === 1 ? r.sp * surge : r.mode === 2 ? r.sp + 1.3 * r.t * r.t : r.sp);
+          r.t += dtM * motionK() * C.runnerSpeed * (r.mode === 1 ? r.sp * surge : r.mode === 2 ? r.sp + 1.3 * r.t * r.t : r.sp);
           if (r.t >= 1) {
             // wind down while idle, respawn only while the session is active
             if (actOn) runners[i] = newRunner(false); else runners.splice(i, 1);
@@ -1590,7 +1650,7 @@ const HalofluxEngine = (() => {
       if (G2) G2.translate(cx, cy);
       for (let i = comets.length - 1; i >= 0; i--) {
         const c = comets[i];
-        c.life += dtM;
+        c.life += dtM * motionK();
         const p = easeIO(Math.min(1, c.life / c.dur));
         const head = Math.min(1, p * (1 + c.win)), tail = Math.max(0, p * (1 + c.win) - c.win);
         const fade = c.life > c.dur ? Math.max(0, 1 - (c.life - c.dur) / 0.25) : 1;
@@ -1685,6 +1745,10 @@ const HalofluxEngine = (() => {
         S.globalCompositeOperation = 'source-over';
       }
 
+      // text guard: punch the light field down where the reading text sits, so the
+      // two planes are visibly separate (switchable; no-op when guardOn is off)
+      applyTextGuard(S);
+
       // fade the finished frame onto the visible canvas (single globalAlpha pass)
       S = S_MAIN;
       if (target !== S_MAIN) {
@@ -1695,6 +1759,16 @@ const HalofluxEngine = (() => {
         S.globalAlpha = outA;
         if (src) S.drawImage(src, 0, 0, W, H);
         S.globalAlpha = 1;
+        // mirror the finished frame onto the second surface (masked by the host);
+        // skipped entirely while guardBlur is off, so the default look pays nothing
+        if (S2 && src && num(C.guardBlur, 0) > 0.3) {
+          S2.setTransform(DPR, 0, 0, DPR, 0, 0);
+          S2.globalCompositeOperation = 'source-over';
+          S2.clearRect(-2, -2, W + 4, H + 4);
+          S2.globalAlpha = outA;
+          S2.drawImage(src, 0, 0, W, H);
+          S2.globalAlpha = 1;
+        }
       }
     }
 
@@ -1815,6 +1889,54 @@ const HalofluxEngine = (() => {
       toolNames = [];
       dirty = true;
     }
+    /* ---------- v0.4.0: layer separation (text and field on two planes) ----------
+       The complaint this answers: "text and animation sit in the same layer".
+       Three independent levers, every one of them switchable from the console:
+         ringData     - how visible the ring's own data panels (baked textures) are
+         fieldBlur    - host-applied CSS blur on the whole field (depth of field)
+         guard*       - a soft clearing punched out of the light field exactly where
+                        the reading text is, so the field reads as BEHIND the text
+       Guard works on the composed frame (frameC) right before the single blit, so
+       it dims only the light, never the UI text underneath (the canvas is composited
+       over the app with mix-blend-mode; removing canvas alpha lets the text through). */
+    function ringDataK() { return clamp(num(C.ringData, 1), 0, 1); }
+    /** motion quiet: 1 = full speed, 0.4 = everything drifts at 40% (still visible, far calmer) */
+    function motionK() { return 1 - 0.6 * clamp(num(C.motionQuiet, 0), 0, 1); }
+    function applyTextGuard(g) {
+      if (!g || !ready) return;
+      if (num(C.guardOn, 0) < 0.5) { guardHit = null; return; }
+      const st = clamp(num(C.guardStrength, 0.4), 0, 1);
+      if (st <= 0.004) { guardHit = null; return; }
+      const rad = Math.max(0, num(C.guardRadius, 0.9)) * R;
+      const colW = Math.max(0, num(C.guardColW, 0));
+      if (rad <= 6 && colW <= 6) { guardHit = null; return; }
+      guardHit = { rad, colW, st };
+      g.save();
+      g.setTransform(DPR, 0, 0, DPR, 0, 0);
+      g.globalCompositeOperation = 'destination-out';
+      if (rad > 6) {
+        const rg = g.createRadialGradient(cx, cy, rad * 0.12, cx, cy, rad);
+        rg.addColorStop(0, 'rgba(0,0,0,' + st + ')');
+        rg.addColorStop(0.55, 'rgba(0,0,0,' + (st * 0.82) + ')');
+        rg.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = rg;
+        g.fillRect(cx - rad, cy - rad, rad * 2, rad * 2);
+      }
+      if (colW > 6) {
+        const half = colW / 2;
+        const soft = clamp(half * 0.35, 16, 140);
+        const x0 = cx - half - soft, x1 = cx + half + soft;
+        const lg = g.createLinearGradient(x0, 0, x1, 0);
+        const e = soft / (x1 - x0);
+        lg.addColorStop(0, 'rgba(0,0,0,0)');
+        lg.addColorStop(e, 'rgba(0,0,0,' + st + ')');
+        lg.addColorStop(1 - e, 'rgba(0,0,0,' + st + ')');
+        lg.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = lg;
+        g.fillRect(x0, 0, x1 - x0, H);
+      }
+      g.restore();
+    }
     function countParticles() {
       return runners.length + comets.length + pulses.length + hazes.length + flares.length + flyers.length + bokehs.length;
     }
@@ -1919,6 +2041,7 @@ const HalofluxEngine = (() => {
         target: !present ? clamp(num(C.voidLevel, 0), 0, 1)
           : (sessRunning ? clamp(num(C.runLevel, 1), 0.2, 2) : clamp(num(C.idleMotion, 0), 0, 1)),
         build: bld, activity: act, spinning: !!spin, loopRunning: running,
+        guard: guardHit,
         cam: { x: cam.x, y: cam.y, z: cam.z },
       };
     }
